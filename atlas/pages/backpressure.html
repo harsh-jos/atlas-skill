@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Backpressure — Atlas</title>
+<link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Systems &amp; Distributed</span><span class="dot"></span>
+      <span>flow control</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Backpressure</h1>
+    <p class="standfirst">What a well-built system does when work arrives faster than it can finish it — and why the obvious fix, a bigger buffer, just buys a few minutes before the same crash, now with more data lost.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+      <p>It's a Tuesday, then it's Black Friday. Your service has one job: accept webhooks and write each one to Postgres. For a year it has been fine, sitting at 200 events a second with the database half-asleep. Then a partner fans out a campaign and inbound traffic triples in ninety seconds.</p>
+
+      <p>Postgres can't keep up — it's doing maybe 1,200 writes a second and the door is now letting in 1,800. The events don't vanish; they pile into the in-memory queue between the HTTP handler and the writer. You watch resident memory climb. The queue is doing exactly what you told it to: holding everything until the writer is ready. At 3:04am the OOM killer ends the argument. The process restarts, the backlog is still sitting in the upstream broker, the new process inhales it, and dies the same way. You are now in a loop, and the loop is losing data.</p>
+
+      <p>Nothing here was a bug. Every component did what it was built to do. The system failed because of a question nobody answered on the whiteboard: <em>when the fast part feeds the slow part, where does the excess go?</em></p>
+
+      <h2>There are only three honest answers</h2>
+
+      <p>Every system has a slowest stage — a bottleneck — and over a long enough window you cannot push more through the whole pipe than that stage allows. When arrivals exceed that limit, the surplus has to go <em>somewhere</em>, and the menu is short:</p>
+
+      <ul>
+        <li><strong>Buffer it</strong> — hold the surplus and hope the spike is brief. Works for bursts; fatal for sustained overload, because a buffer is just a crash with a countdown.</li>
+        <li><strong>Drop it</strong> — refuse or discard work you can't handle. Honest, bounded, and sometimes the only correct move — but you've now lost something.</li>
+        <li><strong>Slow the source</strong> — reach back upstream and make the producer ease off until you've caught up.</li>
+      </ul>
+
+      <p><span class="term">Backpressure</span> is that third answer: the slow stage's ability to push the constraint <em>backwards</em>, against the direction of data flow, until the fast stage feels the slowness and produces less. It's not a component you add. It's a property a pipeline either has or doesn't — a signal that travels upstream.</p>
+
+      <div class="beat">
+        <span class="beat-tag">predict</span>
+        Picture a fixed-size queue between a fast producer and a slow consumer. The queue is full. A new item arrives. Before you read on: what are the producer's options <em>at that exact instant</em>, and which one is quietly the most dangerous?
+      </div>
+
+      <p>At a full queue the producer can do one of three things, and they map straight onto the menu above. It can <strong>block</strong> — wait until a slot frees up. That's backpressure: the producer is now running at the consumer's pace, by force. It can <strong>drop</strong> the item — that's load shedding, a deliberate loss. Or it can <strong>grow the queue</strong> to make room — and that one is the trap, because an unbounded queue doesn't absorb overload, it postpones it and converts a latency problem into an out-of-memory problem. The dangerous option is the one that looks like it's coping.</p>
+
+      <p class="pull">A bigger buffer is not a fix for overload. It's a longer fuse on the same bomb.</p>
+
+      <h2>You already rely on this, constantly</h2>
+
+      <p>The cleanest example of backpressure is one you use millions of times a day without naming it: <strong>TCP flow control</strong>. Every TCP receiver advertises a <em>receive window</em> — how many more bytes it's willing to accept right now. As the receiving application falls behind and its buffer fills, the advertised window shrinks. When it hits zero, the sender is <em>not allowed</em> to send another byte until the receiver says there's room. The slow end reaches back across the network and throttles the fast end. That mechanism has been quietly holding the internet together since 1981.</p>
+
+      <p>This points at the deepest distinction in the topic. <strong>Pull-based</strong> systems get backpressure for free: if the consumer is the one asking for the next item, it simply asks more slowly when it's busy, and the producer naturally idles. <strong>Push-based</strong> systems — where the producer fires data whenever it likes — have no such safety, which is exactly why they're where overload accidents happen. Half of "adding backpressure" to a system is really converting a thoughtless push into a demand-driven pull.</p>
+
+      <p>In code, the most satisfying version of this is when the language hands it to you. A bounded channel does it with no machinery at all:</p>
+
+      <p class="pre-label">Go — a buffered channel of capacity 100 <em>is</em> backpressure</p>
+<pre><code>jobs := make(chan Job, 100)
+
+// Producer goroutine: this send blocks once 100 jobs are
+// unconsumed. The producer physically cannot outrun the
+// consumer — the runtime enforces the speed limit for you.
+jobs &lt;- job        // ← parks here when the buffer is full
+
+// Consumer: pulls at whatever pace it can sustain.
+for job := range jobs {
+    process(job)   // the slow step that sets the whole pace
+}</code></pre>
+
+      <p>No metrics, no tuning, no library. The blocking send <em>is</em> the upstream signal. The interesting engineering only starts when blocking the producer isn't allowed.</p>
+
+      <h2>Where it sits, and where it can't reach</h2>
+
+      <p>Backpressure lives in a small family of overload tactics, and the value is in telling them apart. <strong>Rate limiting</strong> is its proactive cousin: you cap intake at a fixed ceiling regardless of how the downstream feels — useful at a trust boundary, but it doesn't adapt to the real bottleneck the way demand-driven backpressure does. <strong>Load shedding</strong> is what you fall back to when you <em>can't</em> push back: you keep a bounded buffer and drop on a stated policy. A <strong>circuit breaker</strong> is the harsher relative — when the downstream isn't slow but <em>dead</em>, you stop calling it entirely rather than queueing for a corpse. Backpressure is the only one of these that propagates: done right, the signal walks all the way to the true source.</p>
+
+      <div class="lens">
+        <span class="lens-tag">when not to</span>
+        Backpressure needs a producer that can actually slow down. A lot of the time you don't have one. Sensors, market data feeds, other people's webhooks, a UDP firehose — these don't read your receive window, and "please send less" is not a sentence they can hear. The moment your producer is uncontrollable, backpressure has nowhere to push and you're back to <em>shed or buffer</em>. Pick a drop policy on purpose (oldest? newest? sample 1-in-N?) and bound the buffer. The unbounded queue isn't a middle path here — it's just the OOM from the opening story, wearing a disguise.
+      </div>
+
+      <div class="lens">
+        <span class="lens-tag">the part that bites later</span>
+        Backpressure doesn't make load disappear; it relocates it. Push back on a service and the queue forms in its <em>caller</em> instead — and if that caller is handling user requests, you've turned a backend slowdown into user-facing latency, then into a retry storm as impatient clients re-send. Propagated thoughtlessly, it can stall a whole pipeline or deadlock a cycle of services all waiting on each other. So backpressure is never the whole answer: it has to terminate at an edge that can say no — a timeout, a 429, a shed policy — or you've just moved the pileup somewhere you can't see it.
+      </div>
+
+      <p>That edge is the real design decision. Backpressure is how a pipeline stays honest internally; load shedding at the boundary is how it stays alive when the world sends more than it can ever process. A serious system has both, and knows exactly where one hands off to the other.</p>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">If you want this as a real protocol — </span>Reactive Streams standardized async backpressure into a tiny handshake (a subscriber calls <code>request(n)</code> to demand exactly what it can handle); it's worth seeing how that turns "block the thread" into "ask for less".</p>
+        <p class="thread"><span class="lead-in">If you want the math — </span>Little's Law (<code>L = λW</code>) tells you, before you build anything, when a queue is doomed to grow without bound. It's three letters and it predicts the 3am page.</p>
+        <p class="thread"><span class="lead-in">If you want to see it in the wild — </span>Kafka consumer lag is backpressure made observable: the gap between produced and consumed offsets is the queue depth, and watching it grow is watching a bottleneck lose.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Backpressure connects to queues, rate limiting, circuit breakers, reactive streams, and Kafka">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="44"  y2="118"/>
+          <line class="edge active" x1="140" y1="92" x2="236" y2="118"/>
+          <line class="edge active" x1="140" y1="92" x2="140" y2="170"/>
+          <line class="edge"        x1="62"  y1="40"  x2="218" y2="40"/>
+
+          <g class="node" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">queues</text>
+          </g>
+          <g class="node" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">rate limiting</text>
+          </g>
+          <g class="node" transform="translate(44,118)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">circuit breaker</text>
+          </g>
+          <g class="node" transform="translate(236,118)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">reactive streams</text>
+          </g>
+          <g class="node" transform="translate(140,170)">
+            <circle r="7"/><text x="0" y="21" text-anchor="middle">kafka</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">backpressure</text>
+          </g>
+        </svg>
+        <p class="meta-line" style="margin-top:0.6rem">filled = learned · outline = frontier</p>
+      </div>
+
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><span class="meta-line">queues · frontier</span></li>
+          <li><span class="meta-line">rate limiting · frontier</span></li>
+          <li><span class="meta-line">circuit breakers · frontier</span></li>
+          <li><span class="meta-line">reactive streams · frontier</span></li>
+          <li><span class="meta-line">kafka · frontier</span></li>
+        </ul>
+      </div>
+
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Systems &amp; Distributed · flow control</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

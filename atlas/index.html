@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Atlas — your knowledge garden</title>
+<link rel="stylesheet" href="assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header class="home-head">
+    <h1 class="wordmark">Atlas</h1>
+    <p class="tagline">a breadth-first map of the things worth knowing</p>
+    <div class="stats">
+      <div class="stat"><div class="n">1</div><div class="l">learned</div></div>
+      <div class="stat"><div class="n">95</div><div class="l">on the map</div></div>
+      <div class="stat"><div class="n">1<span style="color:var(--ink-faint);font-size:1.4rem">/12</span></div><div class="l">domains touched</div></div>
+    </div>
+    <div class="progress-track" style="max-width:520px"><div class="progress-fill" style="width:1%"></div></div>
+  </header>
+
+
+  <section class="domain">
+    <h2>CS Foundations <span class="count">0 / 7</span></h2>
+    <p class="blurb">The load-bearing ideas under everything else — data structures, algorithms, complexity, computation.</p>
+    <div class="cards">
+      <div class="card frontier">
+        <div class="c-name">Big-O &amp; Amortized Analysis</div>
+        <div class="c-meta"><span class="glyph"></span>complexity · frontier</div>
+        <div class="c-hook">Why &#x27;it works on my laptop&#x27; and &#x27;it works at scale&#x27; are different claims.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Bloom Filters</div>
+        <div class="c-meta"><span class="glyph"></span>probabilistic · frontier</div>
+        <div class="c-hook">A set that can be wrong on purpose, to be small and fast.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Finite State Machines</div>
+        <div class="c-meta"><span class="glyph"></span>computation · frontier</div>
+        <div class="c-hook">The smallest honest model of &#x27;what state am I in&#x27;, everywhere from regex to UI.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Hash Tables, Really</div>
+        <div class="c-meta"><span class="glyph"></span>data structures · frontier</div>
+        <div class="c-hook">The data structure you use daily and the open questions hiding inside it.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">How Regex Engines Work</div>
+        <div class="c-meta"><span class="glyph"></span>computation · frontier</div>
+        <div class="c-hook">Why one regex returns instantly and another hangs your server.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">HyperLogLog</div>
+        <div class="c-meta"><span class="glyph"></span>probabilistic · frontier</div>
+        <div class="c-hook">Counting a billion distinct things in a few kilobytes.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Tries &amp; Radix Trees</div>
+        <div class="c-meta"><span class="glyph"></span>data structures · frontier</div>
+        <div class="c-hook">The shape behind autocomplete, routers, and IP lookup.</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="domain">
+    <h2>Systems &amp; Distributed <span class="count">1 / 17</span></h2>
+    <p class="blurb">How software behaves when it gets big, concurrent, networked, and unreliable.</p>
+    <div class="cards">
+      <a class="card learned" href="pages/backpressure.html">
+        <div class="c-name">Backpressure</div>
+        <div class="c-meta"><span class="glyph"></span>flow control · learned</div>
+        <div class="c-hook">What a well-built system does when work arrives faster than it can finish it.</div>
+      </a>
+      <div class="card frontier">
+        <div class="c-name">Circuit Breakers &amp; Bulkheads</div>
+        <div class="c-meta"><span class="glyph"></span>reliability · frontier</div>
+        <div class="c-hook">Stopping one failing dependency from taking the whole system down with it.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Consensus: Raft &amp; Paxos</div>
+        <div class="c-meta"><span class="glyph"></span>coordination · frontier</div>
+        <div class="c-hook">How a cluster agrees on one truth while machines die mid-sentence.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Consistent Hashing</div>
+        <div class="c-meta"><span class="glyph"></span>distribution · frontier</div>
+        <div class="c-hook">How to add a server without reshuffling everything you stored.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">CRDTs</div>
+        <div class="c-meta"><span class="glyph"></span>theory · frontier</div>
+        <div class="c-hook">Data structures that merge without conflicts — the magic under collaborative editors.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Eventual Consistency</div>
+        <div class="c-meta"><span class="glyph"></span>theory · frontier</div>
+        <div class="c-hook">Wrong now, right later — and why that&#x27;s often the correct trade.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Gossip Protocols</div>
+        <div class="c-meta"><span class="glyph"></span>distribution · frontier</div>
+        <div class="c-hook">How a cluster spreads news the way a rumor spreads through a crowd.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Idempotency</div>
+        <div class="c-meta"><span class="glyph"></span>reliability · frontier</div>
+        <div class="c-hook">The one property that makes &#x27;just retry it&#x27; a safe instruction.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Leader Election</div>
+        <div class="c-meta"><span class="glyph"></span>coordination · frontier</div>
+        <div class="c-hook">Picking one node to be in charge, and noticing when it dies.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Queues as a Design Tool</div>
+        <div class="c-meta"><span class="glyph"></span>patterns · frontier</div>
+        <div class="c-hook">The buffer that turns a brittle synchronous call into a survivable system.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Quorums &amp; the R+W&gt;N Rule</div>
+        <div class="c-meta"><span class="glyph"></span>coordination · frontier</div>
+        <div class="c-hook">A counting trick that buys you consistency without locking everything.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Rate Limiting: Token &amp; Leaky Bucket</div>
+        <div class="c-meta"><span class="glyph"></span>flow control · frontier</div>
+        <div class="c-hook">The two little algorithms behind every &#x27;429 Too Many Requests&#x27;.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Replication</div>
+        <div class="c-meta"><span class="glyph"></span>distribution · frontier</div>
+        <div class="c-hook">Keeping copies in sync — the source of both durability and most consistency bugs.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Sharding &amp; Partitioning</div>
+        <div class="c-meta"><span class="glyph"></span>distribution · frontier</div>
+        <div class="c-hook">Splitting one dataset across many machines without losing your mind.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">The CAP Theorem (and what it actually says)</div>
+        <div class="c-meta"><span class="glyph"></span>theory · frontier</div>
+        <div class="c-hook">The most-cited, most-misquoted result in distributed systems.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">The Exactly-Once Delivery Myth</div>
+        <div class="c-meta"><span class="glyph"></span>reliability · frontier</div>
+        <div class="c-hook">Why &#x27;exactly once&#x27; is a lie, and what people actually mean by it.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Vector Clocks</div>
+        <div class="c-meta"><span class="glyph"></span>theory · frontier</div>
+        <div class="c-hook">Telling what-happened-before apart from what-happened-concurrently, with no global clock.</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="domain">
+    <h2>Data &amp; Storage <span class="count">0 / 13</span></h2>
+    <p class="blurb">Where bytes live, how they&#x27;re indexed, and the engines that move them.</p>
+    <div class="cards">
+      <div class="card frontier">
+        <div class="c-name">B-Trees</div>
+        <div class="c-meta"><span class="glyph"></span>storage engines · frontier</div>
+        <div class="c-hook">The 50-year-old structure under almost every relational index.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Columnar Storage</div>
+        <div class="c-meta"><span class="glyph"></span>analytics · frontier</div>
+        <div class="c-hook">Why analytics databases turn your tables on their side.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Content-Addressed Storage</div>
+        <div class="c-meta"><span class="glyph"></span>storage · frontier</div>
+        <div class="c-hook">Naming data by its hash — the idea under Git, IPFS, and Docker layers.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">HNSW: The Graph Behind Vector DBs</div>
+        <div class="c-meta"><span class="glyph"></span>vector · frontier</div>
+        <div class="c-hook">The navigable-graph index doing the heavy lifting in Milvus, Qdrant, and friends.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Log-Structured Merge Trees</div>
+        <div class="c-meta"><span class="glyph"></span>storage engines · frontier</div>
+        <div class="c-hook">Why modern databases write fast by never writing in place.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Merkle Trees</div>
+        <div class="c-meta"><span class="glyph"></span>storage · frontier</div>
+        <div class="c-hook">How to prove two big datasets differ by sending one small hash.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Milvus &amp; the Vector DB Landscape</div>
+        <div class="c-meta"><span class="glyph"></span>vector · frontier</div>
+        <div class="c-hook">What a vector database actually adds over a library like FAISS.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">MVCC: How Databases Avoid Locks</div>
+        <div class="c-meta"><span class="glyph"></span>transactions · frontier</div>
+        <div class="c-hook">Why your read doesn&#x27;t block someone else&#x27;s write in Postgres.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">OLTP vs OLAP</div>
+        <div class="c-meta"><span class="glyph"></span>analytics · frontier</div>
+        <div class="c-hook">Two database shapes for two opposite jobs, and why mixing them hurts.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Redis Beyond the Cache</div>
+        <div class="c-meta"><span class="glyph"></span>in-memory · frontier</div>
+        <div class="c-hook">It&#x27;s a cache until you realize it&#x27;s also a queue, a lock, a log, and a database.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Transaction Isolation Levels</div>
+        <div class="c-meta"><span class="glyph"></span>transactions · frontier</div>
+        <div class="c-hook">The spectrum from &#x27;fast and slightly wrong&#x27; to &#x27;correct and slow&#x27;.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Vector Search &amp; ANN</div>
+        <div class="c-meta"><span class="glyph"></span>vector · frontier</div>
+        <div class="c-hook">Finding &#x27;similar&#x27; in a billion vectors without comparing all of them.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Write-Ahead Logging</div>
+        <div class="c-meta"><span class="glyph"></span>durability · frontier</div>
+        <div class="c-hook">The trick that lets a database survive a power cut mid-write.</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="domain">
+    <h2>Concurrency &amp; Parallelism <span class="count">0 / 5</span></h2>
+    <p class="blurb">Doing more than one thing at once without corrupting your own state.</p>
+    <div class="cards">
+      <div class="card frontier">
+        <div class="c-name">Atomics &amp; Lock-Free Programming</div>
+        <div class="c-meta"><span class="glyph"></span>synchronization · frontier</div>
+        <div class="c-hook">Coordinating threads without ever taking a lock.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Event Loops vs Threads vs Coroutines</div>
+        <div class="c-meta"><span class="glyph"></span>models · frontier</div>
+        <div class="c-hook">The three answers to &#x27;how do I wait for 10,000 things at once&#x27;.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Locks, Deadlock &amp; Livelock</div>
+        <div class="c-meta"><span class="glyph"></span>synchronization · frontier</div>
+        <div class="c-hook">The cost of mutual exclusion and the classic ways it goes wrong.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Race Conditions &amp; Memory Models</div>
+        <div class="c-meta"><span class="glyph"></span>fundamentals · frontier</div>
+        <div class="c-hook">Why correct-looking concurrent code is wrong in ways your tests won&#x27;t catch.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">The Actor Model</div>
+        <div class="c-meta"><span class="glyph"></span>models · frontier</div>
+        <div class="c-hook">Concurrency as mailboxes and messages instead of shared memory.</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="domain">
+    <h2>Networking &amp; Protocols <span class="count">0 / 5</span></h2>
+    <p class="blurb">How machines talk, and the agreements that let them.</p>
+    <div class="cards">
+      <div class="card frontier">
+        <div class="c-name">DNS Is a Distributed Database</div>
+        <div class="c-meta"><span class="glyph"></span>infrastructure · frontier</div>
+        <div class="c-hook">The naming system you forget about until it takes down half the internet.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">How TLS Actually Works</div>
+        <div class="c-meta"><span class="glyph"></span>security · frontier</div>
+        <div class="c-hook">The handshake that turns an open wire into a private channel.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">HTTP/1.1 → 2 → 3</div>
+        <div class="c-meta"><span class="glyph"></span>application · frontier</div>
+        <div class="c-hook">What each version actually fixed, and why HTTP/3 left TCP behind.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Load Balancing Strategies</div>
+        <div class="c-meta"><span class="glyph"></span>infrastructure · frontier</div>
+        <div class="c-hook">Round-robin is the boring answer; here&#x27;s what real traffic needs.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">TCP, Past the Handshake</div>
+        <div class="c-meta"><span class="glyph"></span>transport · frontier</div>
+        <div class="c-hook">Congestion control, head-of-line blocking, and why TCP feels slow sometimes.</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="domain">
+    <h2>Design &amp; Architecture <span class="count">0 / 9</span></h2>
+    <p class="blurb">Shaping code and systems so they stay changeable. The decision-maker&#x27;s domain.</p>
+    <div class="cards">
+      <div class="card frontier">
+        <div class="c-name">Coupling &amp; Cohesion</div>
+        <div class="c-meta"><span class="glyph"></span>principles · frontier</div>
+        <div class="c-hook">The two words that explain why one codebase is pleasant and another is tar.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Dependency Injection</div>
+        <div class="c-meta"><span class="glyph"></span>patterns · frontier</div>
+        <div class="c-hook">A fancy name for a simple idea that makes code testable.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Domain-Driven Design, the Useful Parts</div>
+        <div class="c-meta"><span class="glyph"></span>modeling · frontier</div>
+        <div class="c-hook">Bounded contexts and ubiquitous language, minus the 600-page book.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">DRY, WET &amp; the Wrong Abstraction</div>
+        <div class="c-meta"><span class="glyph"></span>principles · frontier</div>
+        <div class="c-hook">Why &#x27;don&#x27;t repeat yourself&#x27; quietly causes as many messes as it prevents.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Event Sourcing &amp; CQRS</div>
+        <div class="c-meta"><span class="glyph"></span>patterns · frontier</div>
+        <div class="c-hook">Storing what happened instead of what is — and reading it back differently.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Hexagonal / Ports &amp; Adapters</div>
+        <div class="c-meta"><span class="glyph"></span>patterns · frontier</div>
+        <div class="c-hook">Keeping your business logic from caring whether it&#x27;s behind HTTP or a CLI.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">SOLID, Honestly</div>
+        <div class="c-meta"><span class="glyph"></span>principles · frontier</div>
+        <div class="c-hook">Five principles, three of which you should actually internalize.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">The Saga Pattern</div>
+        <div class="c-meta"><span class="glyph"></span>patterns · frontier</div>
+        <div class="c-hook">Transactions across services when you can&#x27;t hold one big lock.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">The Twelve-Factor App</div>
+        <div class="c-meta"><span class="glyph"></span>principles · frontier</div>
+        <div class="c-hook">An old checklist that still quietly predicts whether your app deploys cleanly.</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="domain">
+    <h2>Engineering Practice <span class="count">0 / 10</span></h2>
+    <p class="blurb">Testing, delivery, and operating software that other people depend on.</p>
+    <div class="cards">
+      <div class="card frontier">
+        <div class="c-name">Blue-Green &amp; Canary Deploys</div>
+        <div class="c-meta"><span class="glyph"></span>delivery · frontier</div>
+        <div class="c-hook">Shipping to some users first, and rolling back before anyone notices.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Caching Strategies &amp; Invalidation</div>
+        <div class="c-meta"><span class="glyph"></span>performance · frontier</div>
+        <div class="c-hook">One of the two hard problems in computer science. Here&#x27;s the map of it.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Chaos Engineering</div>
+        <div class="c-meta"><span class="glyph"></span>operations · frontier</div>
+        <div class="c-hook">Breaking production on purpose, before it breaks itself at 3am.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Feature Flags &amp; Progressive Delivery</div>
+        <div class="c-meta"><span class="glyph"></span>delivery · frontier</div>
+        <div class="c-hook">Decoupling &#x27;deployed&#x27; from &#x27;released&#x27;, and the debt it quietly accrues.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Fuzzing</div>
+        <div class="c-meta"><span class="glyph"></span>testing · frontier</div>
+        <div class="c-hook">Throwing garbage at your code until it confesses a bug.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Logs, Metrics &amp; Traces</div>
+        <div class="c-meta"><span class="glyph"></span>operations · frontier</div>
+        <div class="c-hook">The three signals, what each is for, and why you keep reaching for the wrong one.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Mutation Testing</div>
+        <div class="c-meta"><span class="glyph"></span>testing · frontier</div>
+        <div class="c-hook">Testing your tests by breaking your code on purpose.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Property-Based Testing</div>
+        <div class="c-meta"><span class="glyph"></span>testing · frontier</div>
+        <div class="c-hook">Stop writing examples; describe what must always be true and let the machine attack it.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">SLIs, SLOs &amp; Error Budgets</div>
+        <div class="c-meta"><span class="glyph"></span>operations · frontier</div>
+        <div class="c-hook">Turning &#x27;be reliable&#x27; into a number you can spend.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">The Testing Pyramid (and its critics)</div>
+        <div class="c-meta"><span class="glyph"></span>testing · frontier</div>
+        <div class="c-hook">How much of each kind of test — and why the shape is contested.</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="domain">
+    <h2>Security <span class="count">0 / 4</span></h2>
+    <p class="blurb">Assuming an adversary, and designing so they still lose.</p>
+    <div class="cards">
+      <div class="card frontier">
+        <div class="c-name">Hashing Passwords Properly</div>
+        <div class="c-meta"><span class="glyph"></span>crypto · frontier</div>
+        <div class="c-hook">Why your password hash needs to be slow on purpose.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Public-Key Cryptography</div>
+        <div class="c-meta"><span class="glyph"></span>crypto · frontier</div>
+        <div class="c-hook">How two strangers agree on a secret in public.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Sessions, JWTs &amp; OAuth</div>
+        <div class="c-meta"><span class="glyph"></span>identity · frontier</div>
+        <div class="c-hook">Who you are, proven to a server that has no memory of you.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Threat Modeling</div>
+        <div class="c-meta"><span class="glyph"></span>process · frontier</div>
+        <div class="c-hook">Thinking like the attacker, on a whiteboard, before you ship.</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="domain">
+    <h2>AI / ML Foundations <span class="count">0 / 6</span></h2>
+    <p class="blurb">The statistics and learning theory the modern stack is built on.</p>
+    <div class="cards">
+      <div class="card frontier">
+        <div class="c-name">Cross-Validation &amp; Data Leakage</div>
+        <div class="c-meta"><span class="glyph"></span>evaluation · frontier</div>
+        <div class="c-hook">How to trust a score — and the subtle ways your eval lies to you.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Embeddings</div>
+        <div class="c-meta"><span class="glyph"></span>representation · frontier</div>
+        <div class="c-hook">Turning words, users, or images into geometry you can do math on.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Gradient Descent, Intuitively</div>
+        <div class="c-meta"><span class="glyph"></span>optimization · frontier</div>
+        <div class="c-hook">Walking downhill in a fog — the engine under nearly all of ML.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Loss Functions</div>
+        <div class="c-meta"><span class="glyph"></span>optimization · frontier</div>
+        <div class="c-hook">The number a model is actually trying to make smaller, and why the choice matters.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Regularization</div>
+        <div class="c-meta"><span class="glyph"></span>theory · frontier</div>
+        <div class="c-hook">Deliberately handicapping a model so it generalizes.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">The Bias-Variance Tradeoff</div>
+        <div class="c-meta"><span class="glyph"></span>theory · frontier</div>
+        <div class="c-hook">The single lens that explains why your model under- or over-fits.</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="domain">
+    <h2>Deep Learning <span class="count">0 / 5</span></h2>
+    <p class="blurb">Neural networks, how they train, and why they work.</p>
+    <div class="cards">
+      <div class="card frontier">
+        <div class="c-name">Attention</div>
+        <div class="c-meta"><span class="glyph"></span>architectures · frontier</div>
+        <div class="c-hook">The one mechanism that quietly ate machine learning.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Backpropagation</div>
+        <div class="c-meta"><span class="glyph"></span>training · frontier</div>
+        <div class="c-hook">The chain rule, industrialized — how a network learns from its mistakes.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Diffusion Models</div>
+        <div class="c-meta"><span class="glyph"></span>generative · frontier</div>
+        <div class="c-hook">Generating images by learning to undo noise, step by step.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Dropout, BatchNorm &amp; Friends</div>
+        <div class="c-meta"><span class="glyph"></span>training · frontier</div>
+        <div class="c-hook">The grab-bag of tricks that make deep nets actually trainable.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">The Transformer</div>
+        <div class="c-meta"><span class="glyph"></span>architectures · frontier</div>
+        <div class="c-hook">The architecture behind essentially every modern language model.</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="domain">
+    <h2>LLMs &amp; Generative AI <span class="count">0 / 7</span></h2>
+    <p class="blurb">The transformer era — language models, retrieval, and how to wield them.</p>
+    <div class="cards">
+      <div class="card frontier">
+        <div class="c-name">Context Engineering</div>
+        <div class="c-meta"><span class="glyph"></span>patterns · frontier</div>
+        <div class="c-hook">The discipline that replaced &#x27;prompt engineering&#x27; once context windows got big.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Evaluating LLM Systems</div>
+        <div class="c-meta"><span class="glyph"></span>evaluation · frontier</div>
+        <div class="c-hook">Why &#x27;it looked good in the demo&#x27; is the most expensive sentence in AI.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Fine-Tuning vs RAG vs Prompting</div>
+        <div class="c-meta"><span class="glyph"></span>adaptation · frontier</div>
+        <div class="c-hook">Three ways to make a model &#x27;know&#x27; your stuff, and when each is the wrong one.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Retrieval-Augmented Generation</div>
+        <div class="c-meta"><span class="glyph"></span>patterns · frontier</div>
+        <div class="c-hook">Giving a model an open book so it stops making things up.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">RLHF &amp; Preference Tuning</div>
+        <div class="c-meta"><span class="glyph"></span>alignment · frontier</div>
+        <div class="c-hook">How a raw text predictor becomes an assistant that follows instructions.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Sampling &amp; Decoding</div>
+        <div class="c-meta"><span class="glyph"></span>inference · frontier</div>
+        <div class="c-hook">Temperature, top-p, and what &#x27;creativity&#x27; actually means to a model.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Tokenization &amp; BPE</div>
+        <div class="c-meta"><span class="glyph"></span>fundamentals · frontier</div>
+        <div class="c-hook">Why an LLM can&#x27;t spell, count letters, or do arithmetic cleanly.</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="domain">
+    <h2>ML Systems &amp; MLOps <span class="count">0 / 7</span></h2>
+    <p class="blurb">Getting models out of notebooks and keeping them alive in production.</p>
+    <div class="cards">
+      <div class="card frontier">
+        <div class="c-name">Data &amp; Concept Drift</div>
+        <div class="c-meta"><span class="glyph"></span>monitoring · frontier</div>
+        <div class="c-hook">Your model didn&#x27;t get worse — the world did, and you didn&#x27;t notice.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Feature Stores</div>
+        <div class="c-meta"><span class="glyph"></span>data · frontier</div>
+        <div class="c-hook">The boring infrastructure that stops training and serving from disagreeing.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Kafka as a Log, Not a Queue</div>
+        <div class="c-meta"><span class="glyph"></span>data · frontier</div>
+        <div class="c-hook">The mental flip from &#x27;message queue&#x27; to &#x27;durable replayable log&#x27; that makes Kafka click.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Model Serving: Batch vs Online</div>
+        <div class="c-meta"><span class="glyph"></span>inference · frontier</div>
+        <div class="c-hook">The architecture choice that decides your latency and your bill.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Quantization &amp; Distillation</div>
+        <div class="c-meta"><span class="glyph"></span>efficiency · frontier</div>
+        <div class="c-hook">Making a model smaller and faster while keeping most of its brain.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">RabbitMQ &amp; Message Brokers</div>
+        <div class="c-meta"><span class="glyph"></span>data · frontier</div>
+        <div class="c-hook">Exchanges, routing keys, acks — the broker model behind classic async work.</div>
+      </div>
+      <div class="card frontier">
+        <div class="c-name">Reactive Streams</div>
+        <div class="c-meta"><span class="glyph"></span>data · frontier</div>
+        <div class="c-hook">A standard handshake for backpressure across async boundaries.</div>
+      </div>
+    </div>
+  </section>
+
+  <footer class="home-foot">
+    1 learned · 95 mapped · rebuilt 2026-06-20 ·
+    edit <code>atlas.json</code> and run <code>scripts/build_index.py</code> to refresh
+  </footer>
+
+</main>
+</body>
+</html>

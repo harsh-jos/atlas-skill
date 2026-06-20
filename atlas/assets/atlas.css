@@ -1,0 +1,303 @@
+/* ============================================================================
+   ATLAS — design system
+   Ink on paper, modernized. One accent (indigo) reserved for "you are here".
+   Display: Fraunces (character, used with restraint).
+   Reading: Newsreader (comfortable long-form serif).
+   Chrome:  JetBrains Mono (eyebrows, labels, code, graph).
+   Swap the @import + --font-* vars to retheme the whole atlas in one place.
+============================================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Newsreader:opsz,wght@6..72,400;6..72,500&family=JetBrains+Mono:wght@400;500&display=swap');
+
+:root {
+  /* — palette: paper + ink + a single confident accent — */
+  --paper:        #FBFAF7;   /* warm near-white, NOT the cream cliché */
+  --paper-sunk:   #F2F0EA;   /* recessed surfaces, code wells */
+  --ink:          #1A1916;   /* near-black, warm */
+  --ink-soft:     #4A463E;   /* secondary text */
+  --ink-faint:    #8A857A;   /* captions, meta */
+  --rule:         #E4E0D6;   /* hairlines */
+  --accent:       #3D2BD6;   /* indigo — "you are here", active, frontier */
+  --accent-deep:  #2A1C9E;
+  --accent-wash:  #ECE9FB;   /* accent at 8%-ish, for fills */
+  --warn:         #B4612A;   /* used ONLY for genuine "watch out" / trade-off flags */
+
+  /* — type — */
+  --font-display: 'Fraunces', Georgia, serif;
+  --font-read:    'Newsreader', Georgia, serif;
+  --font-mono:    'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  /* — scale (1.25 minor third, tuned) — */
+  --t-eyebrow: 0.78rem;
+  --t-body:    1.18rem;
+  --t-lead:    1.34rem;
+  --t-h3:      1.5rem;
+  --t-h2:      2.1rem;
+  --t-title:   clamp(2.6rem, 6vw, 4.2rem);
+
+  --measure: 66ch;        /* reading width — tuned for comfort */
+  --rhythm:  1.7;         /* line-height for body */
+}
+
+* { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-read);
+  font-size: var(--t-body);
+  line-height: var(--rhythm);
+  font-optical-sizing: auto;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* ── layout shell ─────────────────────────────────────────────────────── */
+.page {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: clamp(1.5rem, 5vw, 4.5rem) clamp(1.2rem, 5vw, 3rem) 6rem;
+}
+
+/* two-column reading layout: content + meta rail */
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, var(--measure)) minmax(0, 1fr);
+  gap: clamp(2rem, 6vw, 5rem);
+  align-items: start;
+}
+@media (max-width: 880px) {
+  .layout { grid-template-columns: 1fr; gap: 2.5rem; }
+  .rail { order: -1; }   /* on mobile, the map comes first */
+}
+
+.prose { min-width: 0; }
+.rail  { position: sticky; top: 2.5rem; }
+@media (max-width: 880px) { .rail { position: static; } }
+
+/* ── the masthead of a topic page ─────────────────────────────────────── */
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--t-eyebrow);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap;
+}
+.eyebrow .dot { width: 4px; height: 4px; border-radius: 50%; background: var(--ink-faint); }
+.eyebrow .here { color: var(--accent); }
+
+h1.title {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: var(--t-title);
+  line-height: 1.02;
+  letter-spacing: -0.02em;
+  margin: 0.6rem 0 0;
+  text-wrap: balance;
+}
+.standfirst {
+  font-size: var(--t-lead);
+  line-height: 1.45;
+  color: var(--ink-soft);
+  max-width: 54ch;
+  margin: 1.1rem 0 0;
+}
+
+/* hairline that opens the body */
+.openrule { height: 1px; background: var(--rule); border: 0; margin: 2.4rem 0; }
+
+/* ── prose typography ─────────────────────────────────────────────────── */
+.prose p { margin: 0 0 1.35em; max-width: var(--measure); }
+.prose > p:first-of-type { margin-top: 0; }
+
+.prose h2 {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: var(--t-h2);
+  letter-spacing: -0.015em;
+  line-height: 1.1;
+  margin: 2.8rem 0 0.9rem;
+  text-wrap: balance;
+}
+.prose h3 {
+  font-family: var(--font-read);
+  font-weight: 500;
+  font-size: var(--t-h3);
+  margin: 2rem 0 0.6rem;
+  color: var(--ink);
+}
+.prose a {
+  color: var(--accent-deep);
+  text-decoration-color: var(--accent-wash);
+  text-underline-offset: 3px;
+  text-decoration-thickness: 2px;
+}
+.prose a:hover { text-decoration-color: var(--accent); }
+
+.prose strong { font-weight: 600; }
+.prose em { font-style: italic; }
+
+.prose ul, .prose ol { max-width: var(--measure); padding-left: 1.3em; margin: 0 0 1.35em; }
+.prose li { margin: 0.35em 0; }
+.prose li::marker { color: var(--ink-faint); }
+
+/* a quiet inline term — for naming a concept the first time */
+.term { font-style: italic; color: var(--ink); }
+
+/* ── code ─────────────────────────────────────────────────────────────── */
+code, pre, .mono { font-family: var(--font-mono); }
+.prose :not(pre) > code {
+  font-size: 0.86em;
+  background: var(--paper-sunk);
+  padding: 0.12em 0.38em;
+  border-radius: 4px;
+}
+pre {
+  background: var(--ink);
+  color: #EDEAE2;
+  font-size: 0.92rem;
+  line-height: 1.6;
+  padding: 1.15rem 1.3rem;
+  border-radius: 8px;
+  overflow-x: auto;
+  margin: 1.6rem 0;
+  max-width: 100%;
+}
+pre code { background: none; padding: 0; font-size: inherit; }
+.pre-label {
+  font-family: var(--font-mono); font-size: 0.72rem; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--ink-faint); margin: 1.6rem 0 -1.1rem;
+}
+
+/* ── the "engineer's lens": a trade-off / when-not-to aside ───────────── */
+.lens {
+  border-left: 2px solid var(--warn);
+  padding: 0.2rem 0 0.2rem 1.2rem;
+  margin: 1.8rem 0;
+  color: var(--ink-soft);
+}
+.lens .lens-tag {
+  font-family: var(--font-mono); font-size: 0.72rem; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--warn); display: block; margin-bottom: 0.3rem;
+}
+
+/* ── a "predict before you read on" beat (desirable difficulty) ───────── */
+.beat {
+  background: var(--accent-wash);
+  border-radius: 10px;
+  padding: 1.1rem 1.3rem;
+  margin: 1.8rem 0;
+  font-size: 1.05rem;
+  color: var(--accent-deep);
+}
+.beat .beat-tag {
+  font-family: var(--font-mono); font-size: 0.72rem; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--accent); display: block; margin-bottom: 0.3rem;
+}
+
+/* ── pull statement, for one big idea per page (use sparingly) ────────── */
+.pull {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: clamp(1.5rem, 3.4vw, 2rem);
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  margin: 2.4rem 0;
+  max-width: 24ch;
+}
+
+/* ── meta rail components ─────────────────────────────────────────────── */
+.rail h4 {
+  font-family: var(--font-mono);
+  font-size: 0.72rem; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--ink-faint); font-weight: 500;
+  margin: 0 0 0.7rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--rule);
+}
+.rail .block { margin-bottom: 2.2rem; font-size: 0.96rem; }
+.rail ul { list-style: none; padding: 0; margin: 0; }
+.rail li { margin: 0.4rem 0; line-height: 1.4; }
+.rail a { color: var(--ink); text-decoration: none; border-bottom: 1px solid var(--rule); }
+.rail a:hover { border-color: var(--accent); color: var(--accent-deep); }
+.rail .meta-line { color: var(--ink-faint); font-family: var(--font-mono); font-size: 0.78rem; }
+
+/* status chips */
+.chip {
+  display: inline-flex; align-items: center; gap: 0.35rem;
+  font-family: var(--font-mono); font-size: 0.72rem; letter-spacing: 0.04em;
+  padding: 0.18rem 0.5rem; border-radius: 999px; border: 1px solid var(--rule);
+  color: var(--ink-soft);
+}
+.chip.learned { border-color: var(--accent-wash); background: var(--accent-wash); color: var(--accent-deep); }
+.chip .glyph { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-faint); }
+.chip.learned .glyph { background: var(--accent); }
+
+/* ── the signature: knowledge constellation (SVG) ─────────────────────── */
+.constellation { width: 100%; height: auto; display: block; }
+.constellation .edge { stroke: var(--rule); stroke-width: 1.2; }
+.constellation .edge.active { stroke: var(--accent); stroke-width: 1.4; }
+.constellation .node circle { fill: var(--paper); stroke: var(--ink-faint); stroke-width: 1.4; }
+.constellation .node.learned circle { fill: var(--accent); stroke: var(--accent); }
+.constellation .node.here circle { fill: var(--paper); stroke: var(--accent); stroke-width: 2.4; r: 9; }
+.constellation .node text {
+  font-family: var(--font-mono); font-size: 9px; fill: var(--ink-soft);
+}
+.constellation .node.here text { fill: var(--accent-deep); font-weight: 500; }
+
+/* ── footer thread-pullers ────────────────────────────────────────────── */
+.threads { margin-top: 3.5rem; padding-top: 2rem; border-top: 1px solid var(--rule); }
+.threads h4 {
+  font-family: var(--font-mono); font-size: 0.72rem; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--ink-faint); margin: 0 0 1rem;
+}
+.threads .thread { margin: 0 0 0.9rem; max-width: var(--measure); }
+.threads .thread .lead-in { color: var(--ink-faint); font-style: italic; }
+
+/* ── accessibility / motion ───────────────────────────────────────────── */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2px; }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+/* ============================================================================
+   HOME — the knowledge garden (index.html)
+============================================================================ */
+.home-head { margin-bottom: 3.5rem; }
+.home-head .wordmark {
+  font-family: var(--font-display); font-weight: 600; font-size: clamp(2.4rem, 7vw, 4rem);
+  letter-spacing: -0.03em; margin: 0; line-height: 1;
+}
+.home-head .tagline { color: var(--ink-soft); font-size: var(--t-lead); margin: 0.8rem 0 0; max-width: 48ch; }
+
+.stats { display: flex; gap: 2.4rem; flex-wrap: wrap; margin: 2.2rem 0 0; }
+.stat .n { font-family: var(--font-display); font-size: 2.4rem; font-weight: 500; line-height: 1; }
+.stat .l { font-family: var(--font-mono); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-faint); margin-top: 0.3rem; }
+.progress-track { height: 4px; background: var(--paper-sunk); border-radius: 2px; margin-top: 0.6rem; overflow: hidden; }
+.progress-fill { height: 100%; background: var(--accent); border-radius: 2px; }
+
+.domain { margin: 3.2rem 0 0; }
+.domain > h2 {
+  font-family: var(--font-display); font-weight: 500; font-size: var(--t-h2);
+  letter-spacing: -0.015em; margin: 0 0 0.3rem;
+  display: flex; align-items: baseline; gap: 0.8rem;
+}
+.domain > h2 .count { font-family: var(--font-mono); font-size: 0.8rem; color: var(--ink-faint); letter-spacing: 0.04em; }
+.domain > .blurb { color: var(--ink-soft); margin: 0 0 1.3rem; max-width: 60ch; }
+
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 0.8rem; }
+.card {
+  display: block; text-decoration: none; color: inherit;
+  border: 1px solid var(--rule); border-radius: 10px; padding: 0.95rem 1.05rem;
+  background: var(--paper); transition: border-color 0.15s, transform 0.15s;
+}
+.card:hover { border-color: var(--accent); transform: translateY(-2px); }
+.card.frontier { border-style: dashed; background: transparent; }
+.card .c-name { font-family: var(--font-read); font-weight: 500; font-size: 1.08rem; line-height: 1.2; }
+.card .c-meta { font-family: var(--font-mono); font-size: 0.7rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-faint); margin-top: 0.5rem; display: flex; align-items: center; gap: 0.4rem; }
+.card.learned .c-meta .glyph { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+.card.frontier .c-meta .glyph { width: 7px; height: 7px; border-radius: 50%; border: 1.4px solid var(--ink-faint); }
+.card .c-hook { color: var(--ink-soft); font-size: 0.92rem; line-height: 1.4; margin-top: 0.45rem; }
+
+.home-foot { margin-top: 5rem; padding-top: 2rem; border-top: 1px solid var(--rule); font-family: var(--font-mono); font-size: 0.78rem; color: var(--ink-faint); }
