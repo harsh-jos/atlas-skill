@@ -4,7 +4,8 @@ Atlas is a Codex/Claude-compatible learning skill that turns requests like "teac
 
 ## Project Structure
 
-- `atlas/.claude/skills/atlas/` - installable skill bundle (`SKILL.md` + references)
+- `atlas/.claude/skills/atlas/SKILL.md` - skill entrypoint
+- `atlas/.claude/skills/atlas/references/` - required reference docs used by the skill
 - `atlas/atlas.json` - map + memory of topics, progress, and links
 - `atlas/pages/` - generated lesson pages
 - `atlas/scripts/build_index.py` - regenerates `atlas/index.html` from `atlas.json`
