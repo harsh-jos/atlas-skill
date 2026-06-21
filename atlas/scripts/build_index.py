@@ -46,11 +46,11 @@ def main() -> int:
         bucket = by_domain.get(t.get("domain"))
         (orphans if bucket is None else bucket).append(t)
 
-    # domains ordered by the atlas; topics within: learned first, then frontier, alpha by title
+    # domains ordered by the atlas-go; topics within: learned first, then frontier, alpha by title
     def topic_sort(t):
         return (0 if t.get("status") == "learned" else 1, t.get("title", "").lower())
 
-    name = esc(meta.get("name", "Atlas"))
+    name = esc(meta.get("name", "Atlas Go"))
     subtitle = esc(meta.get("subtitle", "a breadth-first map of the things worth knowing"))
 
     parts = []
@@ -60,9 +60,6 @@ def main() -> int:
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{name} — your knowledge garden</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@400;500;600&family=Newsreader:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="assets/atlas.css">
 </head>
 <body>

@@ -1,6 +1,6 @@
 # Pedagogy — how to actually teach a topic
 
-This is the difference between Atlas and a summarizer. Read it before every lesson.
+This is the difference between Atlas Go and a summarizer. Read it before every lesson.
 Everything here is a **goal**, drawn from cognitive science. None of it is a section to
 print. You pick the goals this topic needs and meet them invisibly. (See SKILL.md → *The
 line that matters*.)
