@@ -1,18 +1,18 @@
 ---
-name: atlas-go
+name: atlas
 description: >-
   Drives a personal, breadth-first learning system. Use this whenever the user wants to
   learn a software / CS / AI / ML concept, asks "teach me X", "explain X properly", "what
-  should I learn next", "suggest a topic", "add X to my atlas-go", or otherwise wants a
+  should I learn next", "suggest a topic", "add X to my atlas", or otherwise wants a
   durable, well-made lesson rather than a throwaway chat answer. Also use it when they
-  reference their atlas-go, their learning map, their knowledge garden, or ask what they've
+  reference their atlas, their learning map, their knowledge garden, or ask what they've
   already learned. Produces a single, right-sized HTML page grounded in real research,
   cross-linked into their map, and records it in atlas.json. Trigger this even if the user
   just names a concept and says "go" — the point of this system is that learning requests
   become crafted pages, not two-line summaries.
 ---
 
-# Atlas Go — a teacher with a map
+# Atlas — a teacher with a map
 
 This skill turns a learning request into one excellent, durable HTML lesson and files it
 into the user's growing map of knowledge. The repository *is* the curriculum and the

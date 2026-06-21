@@ -1,6 +1,6 @@
-# atlas-go.json — schema, updates, and the suggestion logic
+# atlas.json — schema, updates, and the suggestion logic
 
-`atlas-go.json` is the single source of truth: the territory, what's learned, and how topics
+`atlas.json` is the single source of truth: the territory, what's learned, and how topics
 connect. It's plain JSON on purpose — version-controlled, diffable, hand-editable. The user
 owns it and can re-domain, rename, or prune anything.
 
@@ -52,8 +52,8 @@ Status meanings:
    not-yet-mapped neighbor; render it as plain text in the rail, not a link.
 4. **Rebuild the home page:** `python scripts/build_index.py`. Never hand-edit `index.html`.
 
-Edit the JSON precisely (it's data, not prose) and keep it valid — a broken `atlas-go.json`
-breaks the whole system. After editing, a quick `python -c "import json;json.load(open('atlas-go.json'))"`
+Edit the JSON precisely (it's data, not prose) and keep it valid — a broken `atlas.json`
+breaks the whole system. After editing, a quick `python -c "import json;json.load(open('atlas.json'))"`
 is a cheap safety check.
 
 ## Suggestion logic (Mode B) — breadth-first on purpose

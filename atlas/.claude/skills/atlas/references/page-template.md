@@ -1,7 +1,7 @@
 # Page template — the HTML contract
 
 A consistent *frame*, a free *interior*. The masthead, shell, and meta-rail are fixed so
-every page feels like part of one atlas-go. What goes inside `.prose` is chosen per topic — the
+every page feels like part of one atlas. What goes inside `.prose` is chosen per topic — the
 CSS gives you components to reach for, never a skeleton to fill. (If you find yourself using
 the same interior structure on every page, you're doing it wrong; see pedagogy.md.)
 
@@ -17,10 +17,7 @@ place — the CSS — so pages must not hardcode colors or fonts.
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{TITLE}} — Atlas Go</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Newsreader:opsz,wght@6..72,400;6..72,500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <title>{{TITLE}} — Atlas</title>
   <link rel="stylesheet" href="../assets/atlas.css">
 </head>
 <body>
