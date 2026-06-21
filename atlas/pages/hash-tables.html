@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hash Tables, Really — Atlas</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>CS Foundations</span><span class="dot"></span>
+      <span>data structures</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Hash Tables, Really</h1>
+    <p class="standfirst">The data structure you use a hundred times a day — and the surprisingly deep design decisions hiding inside Python dicts, Go maps, and every O(1) lookup you've taken for granted.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+      <p>In 2016, Python 3.6 shipped a new dict implementation. The release notes mentioned lower memory usage and faster iteration. Then a funny thing happened: people noticed their dicts were preserving insertion order. Keyword arguments kept their declaration order. JSON round-tripped without reordering keys. The language didn't promise this — it fell out of the data structure.</p>
+
+      <p>The story of how that happened is the story of how hash tables actually work, and it starts with the one problem every hash table has to solve.</p>
+
+      <h2>Two keys walk into the same bucket</h2>
+
+      <p>A hash function maps a key to an integer, and that integer picks a slot. But the hash space is enormous (2<sup>64</sup> values for a 64-bit hash) and the table has maybe 8 slots. Many keys will map to the same slot. This is the <span class="term">collision</span>, and how a table resolves it is its defining design decision.</p>
+
+      <p>The textbook answer is <span class="term">chaining</span>: each slot holds a linked list (or a balanced tree, in Java's <code>HashMap</code> once a bucket grows past 8 entries). Hash to a slot, walk the list, find your key. Simple to describe, simple to implement, and it handles high load factors gracefully — the lists just grow longer.</p>
+
+      <p>The problem with chaining is the hardware it runs on. Following a pointer in a linked list is a cache miss, and cache misses dominate modern CPU costs. If your hash table is hot — and most are — you can do better.</p>
+
+      <h2>The alternative: keep everything in one array</h2>
+
+      <p><span class="term">Open addressing</span> stores entries directly in the table array, one per slot. When a key maps to slot 5 and slot 5 is occupied, you probe: check slot 6, then 7, then 8, wrapping around. The probing strategy determines everything about performance.</p>
+
+      <p>The naive approach is <span class="term">linear probing</span> — try the next slot, and the next, until you find an empty one. It's cache-friendly (sequential access), but it suffers from <span class="term">primary clustering</span>: a run of consecutive filled slots acts like a magnet, growing longer and slower with each collision. Inserts near a cluster degrade toward O(n).</p>
+
+      <p><span class="term">Quadratic probing</span> jumps by growing squares — slot + 1, slot + 4, slot + 9 — which breaks up clusters but can miss empty slots if the table size isn't prime. <span class="term">Double hashing</span> uses a second hash function to compute the probe step, producing nearly independent probe sequences, at the cost of computing a second hash.</p>
+
+      <h2>Robin Hood: steal from the rich</h2>
+
+      <p>There's a subtler idea. In open addressing, not all entries have traveled the same distance from their ideal slot. Some got lucky and landed right where they hashed; others probed 12 slots to find a home. <span class="term">Robin Hood hashing</span> enforces fairness: on insert, if the key you're inserting has already traveled farther from its ideal slot than the key currently occupying this slot, you evict the occupant and keep going with it instead. The rich (close to home) give to the poor (far from home).</p>
+
+      <p>This sounds like a gimmick, but it provably bounds the variance of probe lengths — no key gets stranded far from home while its neighbor sits comfortably. The worst-case probe length drops dramatically, and the table stays fast even at high load factors. Rust's standard <code>HashMap</code> uses Robin Hood. So does Go's <code>map</code>, in spirit.</p>
+
+      <h2>The Python dict: compact, ordered, and a little bit sneaky</h2>
+
+      <p>The Python 3.6 dict — designed by Raymond Hettinger — replaced the old implementation's sparse table of entries with two arrays:</p>
+
+      <p>A <strong>dense entries table</strong> stores each key-value pair exactly once, in insertion order. This is a flat array of structs: <code>[hash, key_ptr, value_ptr, hash, key_ptr, value_ptr, ...]</code>. Because entries are stored in insertion order and never moved (only marked deleted), iteration is a straight array walk — fast, cache-friendly, and naturally ordered.</p>
+
+      <p>A <strong>sparse index</strong> — the hash table proper — maps each hash to an index into the entries table. It uses open addressing with a custom probing scheme. Each slot stores either an index into the entries array or a sentinel for empty/tombstone.</p>
+
+      <p>This split is the trick. When you resize, you rebuild the cheap sparse index without touching the entries table. Insertion order is a free side effect: entries are appended to the dense array and never reordered. The old dict couldn't make this promise because resizing reshuffled everything.</p>
+
+      <div class="pull">The dictionary didn't gain ordering because Python decided dictionaries should be ordered. It gained ordering because the compact layout was faster, and ordering was a free side effect.</div>
+
+      <h2>The load factor: the fundamental dial</h2>
+
+      <p>Every hash table has a <span class="term">load factor</span> &mdash; the ratio of filled slots to total slots. It's the single number that controls the speed-versus-space trade.</p>
+
+      <p>At load factor 0.5, half the slots are empty. Collisions are rare, lookups are fast, and you're using twice the memory you need. At load factor 0.9, memory is efficient but probe chains are long — you're spending CPU searching instead of space storing.</p>
+
+      <p>Most general-purpose hash tables resize around 0.66–0.75. It's an empirical sweet spot where the expected probe length is roughly 2–3 slots, and the memory overhead is roughly 33%. But specialized tables pick different points: an in-memory cache that's mostly read might sit at 0.9; a latency-sensitive path might resize at 0.5.</p>
+
+      <h2>Resizing: why you can't just grow the array</h2>
+
+      <p>You can't <code>realloc</code> a hash table. The hash function maps a key to a slot <em>in a table of size N</em>. Double N and every key maps to a different slot. Resizing means rehashing every entry into the new table.</p>
+
+      <p>This is an O(n) operation that hits on a single insert — the one that crosses the threshold. Most implementations amortize this cost (the same way dynamic arrays amortize growth), but the latency spike is real. Real-time systems sometimes use <span class="term">incremental resizing</span>: allocate the new table, move a few entries on each insert, and consult both tables on lookup until the migration finishes. Redis does this.</p>
+
+      <div class="beat">
+        <span class="beat-tag">predict</span>
+        A hash table with 1,000,000 entries is at load factor 0.75. You insert one more key and it resizes to 2,000,000 slots, rehashing everything. But before you answer: what determines whether this resize is a latency spike the user notices, or invisible noise in a p99 metric? And what would you do differently if the answer were "the user notices"?
+      </div>
+
+      <p>The user notices if the rehash happens on the critical path — a request handler, a render loop, a hot codec. The answer, if it matters, is incremental resizing: spread the work across subsequent inserts so no single one pays the full O(n) bill. The cost is implementation complexity and the need to check two tables on every lookup during the migration window.</p>
+
+      <h2>Hash flooding: when O(1) becomes O(n)</h2>
+
+      <p>In 2011, a class of DoS attacks hit web frameworks including PHP, Ruby, and Python. The attacker crafted HTTP parameters whose keys all collided in the framework's hash table — thousands of keys hashing to the same bucket. Every insert probed the entire chain. A single request could burn CPU-minutes. nginx, Tomcat, and Flask all shipped patches within weeks.</p>
+
+      <p>The fix is <span class="term">universal hashing</span> with a per-process random seed: mix a random value into the hash function so an attacker can't predict which keys collide. Python added hash randomization in 3.3 (<code>PYTHONHASHSEED</code>). Most language runtimes did the same. But the lesson is deeper: O(1) is an amortized probabilistic guarantee, not an absolute one, and an adversary who can control your keys can break it.</p>
+
+      <h2>Where hash tables sit on the map</h2>
+
+      <p>Hash tables occupy a distinct point in the data-structure trade space. They share O(1) average-case access with arrays (indexed by integer), but trade contiguous-memory guarantees for key-flexibility. They're the inverse of a <strong>search tree</strong>: a B-tree gives you ordered traversal and logarithmic worst-case; a hash table gives you constant-time lookup and no ordering. They're the foundation under <strong>bloom filters</strong> (probabilistic membership), <strong>consistent hashing</strong> (distributed lookup), and every <strong>hash set</strong> ever written.</p>
+
+      <p>At the implementation level, a hash table is a small collection of genuinely clever ideas — open addressing, Robin Hood, compact storage — that collectively turn an O(n) worst case into an O(1) everyday reality. The ideas are 60 years old and still being refined.</p>
+
+      <div class="lens">
+        <span class="lens-tag">when not to</span>
+        Reach for something else when you need ordered traversal (a B-tree or sorted array keeps keys in order), when N is small and fixed (a linear scan of an array beats a hash table until roughly 30–50 entries, because hashing costs more than comparing), or when you need strict worst-case guarantees (a balanced tree gives O(log n) always; a hash table gives O(n) on a bad day). Also, if your keys are insert-only and you never need to look them up by key — you just want deduplication — a sorted array with binary search can be smaller and simpler.
+      </div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">If the distributed angle hooked you — </span><strong>Consistent hashing</strong> takes the hash primitive and turns it into a way to add servers without reshuffling data. On your frontier, and a natural next step.</p>
+        <p class="thread"><span class="lead-in">If the probabilistic turn interests you — </span><strong>Bloom filters</strong> use hashing to build a set that's deliberately wrong sometimes, in exchange for being tiny and fast. A direct descendant of the ideas on this page.</p>
+        <p class="thread"><span class="lead-in">If you want the analysis tools — </span><strong>Big-O &amp; amortized analysis</strong> is the lens that explains why a hash table is O(1) "on average" and what that average is actually averaging over.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Hash tables connect to consistent hashing, bloom filters, and big-O analysis">
+          <line class="edge active" x1="140" y1="100" x2="62"  y2="42"/>
+          <line class="edge active" x1="140" y1="100" x2="218" y2="42"/>
+          <line class="edge active" x1="140" y1="100" x2="140" y2="160"/>
+          <line class="edge"        x1="62"  y1="42" x2="218" y2="42"/>
+
+          <g class="node learned" transform="translate(62,42)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">consistent hashing</text>
+          </g>
+          <g class="node" transform="translate(218,42)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">bloom filters</text>
+          </g>
+          <g class="node" transform="translate(140,160)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">big-O</text>
+          </g>
+          <g class="node here" transform="translate(140,100)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">hash tables</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="consistent-hashing.html">Consistent hashing</a></li>
+          <li><span class="meta-line">Bloom filters · frontier</span></li>
+          <li><span class="meta-line">Big-O · frontier</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">CS Foundations · data structures</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

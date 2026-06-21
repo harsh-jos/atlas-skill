@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Queues as a Design Tool — Atlas</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Systems &amp; Distributed</span><span class="dot"></span>
+      <span>patterns</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Queues as a Design Tool</h1>
+    <p class="standfirst">The buffer that turns a brittle synchronous call into a survivable system — why the lowly queue is the most under-deployed pattern in distributed systems, and how a few well-placed ones change everything.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+      <p>A payment processor goes live. Orders arrive through a thin API layer that calls the processor synchronously. Most payments clear in 200 ms. Then a flash sale hits: the processor's payment gateway throttles to 50 concurrent requests, the API's thread pool hits its limit, new requests queue in the accept queue, the load balancer's health check starts failing, and — three seconds later — every request is getting a 502. Nobody's credit card was declined. The system just couldn't <em>hold</em> the work long enough to process it.</p>
+
+      <p>The core problem wasn't speed. It was <span class="term">coupling</span> — the arrival rate and the processing rate were yoked together. When the second outpaced the first, the only pressure-release valve was failure.</p>
+
+      <h2>The queue as a seam</h2>
+
+      <p>A queue decouples a producer from its consumer in both time and space. The producer writes to the queue and walks away. The consumer reads at its own pace. Neither knows how many of the other exist, or where they live, or whether they're currently alive.</p>
+
+      <p>This is not a data-structure observation. It's an architectural one. Every synchronous call-path is a bet that the callee will be available, responsive, and fast enough, every time, under all conditions. A queue converts that bet into a contract: the work <em>will</em> be done, but not necessarily right now, and not necessarily by the thread that received it.</p>
+
+      <div class="pull">A queue doesn't make work faster. It makes the system patient.</div>
+
+      <p>Three things change when you insert a queue between two components:</p>
+
+      <p><strong>The producer's latency drops to the cost of enqueue.</strong> It no longer waits for the real work. This alone can shrink p99 latency by orders of magnitude when the work is variable-cost — image processing, email delivery, charge settlement.</p>
+
+      <p><strong>The consumer controls its own concurrency.</strong> Instead of being battered by whatever the producer sends, it pulls work when it has capacity. This is the difference between "process up to 100 at a time" and "wake up to find 5,000 waiting in your thread pool."</p>
+
+      <p><strong>Survivability gets a knob.</strong> If the consumer dies, the queue holds the work. If the producer spikes, the queue absorbs the burst. The system degrades into waiting, not crashing.</p>
+
+      <h2>The shapes a queue can take</h2>
+
+      <p>Not all queues are created equal, and reaching for the wrong one is a reliable way to create a distributed system that's harder to operate than the synchronous version.</p>
+
+      <p><strong>In-process queues</strong> — a channel, a <code>BlockingQueue</code>, a Go buffered channel. Zero network cost, exactly one process lifespan. The consumer dies with the process. Use them to decouple threads, not services. A common mistake: using an in-process queue and then being surprised that restarting the process drops the backlog.</p>
+
+      <p><strong>Broker queues</strong> — RabbitMQ, SQS, ActiveMQ. The queue is a separate service that holds messages durably. Producers and consumers are processes that might run on different machines, at different times. The broker adds a network hop, operational complexity, and genuine durability. Messages survive process restarts. You can inspect queue depth without attaching a debugger.</p>
+
+      <p><strong>Log-based queues</strong> — Kafka, Pulsar, Redpanda. The queue is a partitioned, append-only log. Consumers track their own offset; the broker doesn't delete on read. This means multiple consumers can read the same message independently, and a consumer can rewind to replay history. The trade is that the "queue" is now a durable, replayable record of everything that happened — which is either exactly what you need or a lot of operational weight you didn't.</p>
+
+      <h2>Delivery semantics: the honesty framework</h2>
+
+      <p>Every queue sits somewhere on a three-point spectrum, and every point above "at most once" costs something.</p>
+
+      <p><strong>At most once</strong> — fire and forget. The message might not arrive. Good for metrics, logs where sampling loss is acceptable, non-critical telemetry. The cheapest option, and often the correct one.</p>
+
+      <p><strong>At least once</strong> — the message will arrive, but it might arrive more than once. The consumer must be <span class="term">idempotent</span>: processing the same message twice must produce the same side effects as processing it once. This is where most real systems live. It requires acknowledgements and retries on the consumer side.</p>
+
+      <p><strong>Exactly once</strong> — semantically: the message is processed once, even if it's delivered multiple times. This is not a delivery guarantee (the network can't promise this); it's a coordination protocol built on idempotent writes and transactional outboxes. Kafka calls it "exactly-once semantics"; what they mean is "the consumer won't observe duplicates if you use our transactions API." The distinction matters.</p>
+
+      <div class="lens">
+        <span class="lens-tag">watch out</span>
+        At-least-once with a non-idempotent consumer is the most common data-corruption bug in queue-based systems. If your payment processor charges the card on receipt but doesn't deduplicate by idempotency key, a single retry charges it twice. Every at-least-once consumer must either be naturally idempotent (upsert, idempotency-key check) or tolerate the duplicate.
+      </div>
+
+      <h2>Dead letters and the poison message problem</h2>
+
+      <p>Some messages can't be processed — ever. A malformed payload, a reference to a deleted user, a callback URL that returns 400. If the consumer retries indefinitely, it blocks the queue. If it discards the message, you lose visibility.</p>
+
+      <p>The pattern: after N failed attempts, move the message to a <span class="term">dead letter queue</span> (DLQ). The DLQ is a side-queue that holds messages for human inspection. It doesn't fix the problem — it quarantines it so the healthy messages keep flowing. A system without a DLQ is one bad message away from a stalled pipeline.</p>
+
+      <h2>Where queues sit on the map</h2>
+
+      <p>Queues are a <em>pattern</em> primitive, not a data-structure primitive. They sit above specific implementations (RabbitMQ, Kafka) and below the flow-control concerns that govern them (backpressure, rate limiting).</p>
+
+      <p>They share DNA with <strong>publish/subscribe</strong> — both decouple producers from consumers — but a queue delivers to one consumer (competing consumers pattern) while pub/sub fans out to many. They're the inverse of a <strong>direct RPC call</strong>, where caller and callee are coupled in time (both must be alive) and space (the caller must know the address). And they're the foundation under <strong>event-driven architecture</strong>: every event-driven system assumes a queue or log somewhere, even if it's hidden behind an abstraction.</p>
+
+      <p>You already learned <strong>backpressure</strong> — the question of what happens when the queue fills up. A queue without backpressure is a memory leak with extra steps. A queue <em>with</em> backpressure is a system that degrades gracefully under load instead of collapsing.</p>
+
+      <div class="beat">
+        <span class="beat-tag">your call</span>
+        You're designing an order-processing pipeline. Orders arrive through a webhook that expects a 200 OK within 3 seconds. Processing each order — validate, charge, allocate inventory, notify warehouse — takes roughly 8 seconds and occasionally 30. Before reading on: what shape of queue do you reach for, and what does the webhook return to the caller?
+      </div>
+
+      <p>The webhook writes to a broker queue (durable, so orders survive a restart) and returns 202 Accepted with a status-check URL. The caller polls the status endpoint. The queue depth is a leading indicator of processing health; if it's growing, you're falling behind and need to either scale consumers or shed load — which is backpressure, again.</p>
+
+      <h2>The costs nobody puts in the README</h2>
+
+      <p><strong>Latency.</strong> A queue adds at least one network round-trip (broker) plus serialization. For a 2 ms operation, this can dominate. Queues pay off when the work is expensive enough that the decoupling earns back the overhead.</p>
+
+      <p><strong>Debugging becomes harder.</strong> A synchronous call stack has a clear causal chain: A called B, B timed out. With a queue, A enqueued, and sometime later — maybe seconds, maybe minutes — something went wrong in the consumer, in a different process, possibly on a different machine. Tracing tools (OpenTelemetry context propagation) help, but they're not free.</p>
+
+      <p><strong>The queue becomes a coupling point.</strong> Both sides now depend on the queue's availability, schema, and throughput. If the broker goes down, neither side can do its job. Queues are infrastructure; they need monitoring, configuration, and someone who knows what "queue depth" means at 2 am.</p>
+
+      <p><strong>Ordering isn't free.</strong> A single FIFO queue preserves order. Partitioned queues (Kafka) preserve order within a partition, not across them. If you need strict global ordering, you're back to a single partition — and a single consumer — which caps throughput at one consumer's speed.</p>
+
+      <div class="lens">
+        <span class="lens-tag">when not to</span>
+        Don't reach for a queue when the caller genuinely needs the answer before it can proceed. A login request needs a yes/no now; queueing "check this password" behind 500 other logins doesn't help anyone. Similarly, if your workload is consistently faster than your overhead — processing a sub-millisecond cache lookup through a broker queue is just slowing things down. The queue earns its keep when work is expensive, bursty, or both.
+      </div>
+
+      <h2>Queue depth as a signal</h2>
+
+      <p>Queue depth — the number of waiting messages — is the single most useful metric in a queue-based system. It's a leading indicator: it tells you you're in trouble <em>before</em> the timeouts start. If depth is steady, the system is keeping up. If depth is growing, consumers can't keep pace, and you're headed for either backpressure activation or an OOM kill. If depth is zero for long stretches, your consumers might be over-provisioned.</p>
+
+      <p>Depth also tells you which queue to look at first during an incident. A sudden spike on the payment-processing queue and flat lines everywhere else is a much narrower problem than "everything is slow."</p>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">If the durability angle hooked you — </span><strong>Kafka as a log, not a queue</strong> is the mental flip that makes Kafka click. It's on your frontier.</p>
+        <p class="thread"><span class="lead-in">If the delivery-semantics question lingered — </span><strong>The exactly-once delivery myth</strong> digs into why "exactly once" is a protocol, not a promise, and what people actually build instead.</p>
+        <p class="thread"><span class="lead-in">If you want the next layer up — </span><strong>RabbitMQ &amp; message brokers</strong> takes the queue primitive into exchanges, routing keys, and the broker model behind most async architectures.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Queues sit between backpressure and message brokers like RabbitMQ and Kafka">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="38"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="38"/>
+          <line class="edge active" x1="140" y1="92" x2="55"  y2="138"/>
+          <line class="edge"        x1="62"  y1="38" x2="55"  y2="138"/>
+
+          <g class="node learned" transform="translate(62,38)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">backpressure</text>
+          </g>
+          <g class="node" transform="translate(218,38)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">RabbitMQ</text>
+          </g>
+          <g class="node" transform="translate(55,138)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">Kafka</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">queues</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="backpressure.html">Backpressure</a></li>
+          <li><span class="meta-line">RabbitMQ · frontier</span></li>
+          <li><span class="meta-line">Kafka · frontier</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Systems &amp; Distributed · patterns</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Big-O &amp; Amortized Analysis — Atlas</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>CS Foundations</span><span class="dot"></span>
+      <span>complexity</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Big-O &amp; Amortized Analysis</h1>
+    <p class="standfirst">Why "it works on my machine" and "it works at scale" are claims made by different people — the lens that separates algorithms that scale from ones that don't, and the accounting trick that makes worst-case analysis honest.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+      <p>An engineer pushes a change: a lookup that walks a flat list. Works fine in dev with 50 items. Production has 200,000. The endpoint goes from 2 ms to 14 seconds. The code is correct. The algorithm is wrong.</p>
+
+      <p>Big-O is the language that would have caught this before a line was written. But the version most engineers carry around — "O(n) bad, O(log n) good" — strips out the parts that actually matter for making decisions.</p>
+
+      <h2>What Big-O actually measures</h2>
+
+      <p>Big-O describes how a function's resource consumption <em>grows</em> as the input size grows. It's not about absolute speed — it's about the <span class="term">shape</span> of the growth curve. An O(n²) algorithm on a supercomputer will eventually lose to an O(n log n) algorithm on a phone, given enough input.</p>
+
+      <p>Formally: <span class="term">f(n) = O(g(n))</span> means there exist constants C and n₀ such that f(n) ≤ C · g(n) for all n ≥ n₀. In English: beyond some input size, g(n) is an upper bound on f(n), times some constant. It's an asymptotic upper bound — it describes behavior at scale, not at n=5.</p>
+
+      <p>The standard shapes, in order of growth:</p>
+
+      <p><strong>O(1) — constant.</strong> The cost doesn't change with input size. Array indexing, hash table lookup (average case), stack push. The holy grail, and rarer than it looks — a "constant time" operation that hashes a 500-byte string is doing more work than one that hashes an 8-byte integer, but neither grows with N.</p>
+
+      <p><strong>O(log n) — logarithmic.</strong> Each operation cuts the search space in half. Binary search, balanced tree lookup, finding a key in a B-tree. The curve flattens so fast it's effectively constant for any real N — log₂(1,000,000) = 20. A million-item binary search costs ~20 comparisons.</p>
+
+      <p><strong>O(n) — linear.</strong> Cost grows proportionally to input. Scanning an unsorted list, summing an array, copying a buffer. Respectable and often optimal — if you must inspect every element, you can't beat O(n).</p>
+
+      <p><strong>O(n log n) — linearithmic.</strong> The product of linear and logarithmic. Comparison-based sorting lives here (merge sort, heap sort, Timsort). It's the theoretical lower bound for comparison sort, and it's fast enough for nearly everything.</p>
+
+      <p><strong>O(n²) — quadratic.</strong> Nested loops over N. Bubble sort, insertion sort, checking all pairs. Tolerable for N < ~1,000. At N=10,000, it's 100 million operations — you feel it. At N=1,000,000, it's unusable.</p>
+
+      <p><strong>O(2ⁿ) — exponential.</strong> Each additional input element doubles the work. Brute-force subset problems, naive recursion for Fibonacci. At n=30, it's a billion operations. At n=100, the universe ends first. These are problems where you need dynamic programming, approximation, or a different formulation.</p>
+
+      <div class="pull">The only numbers that matter are the ones that grow when N grows. Everything else is a constant factor, and constant factors are what profiling is for.</div>
+
+      <h2>The hidden parts: Ω, Θ, and the constant that kills you</h2>
+
+      <p>Big-O is an <em>upper</em> bound. It says "no worse than." The other two are used less often but complete the picture:</p>
+
+      <p><strong>Ω (Omega)</strong> is a lower bound — "no better than." Comparison-based sorting is Ω(n log n): you cannot sort by comparing elements without doing at least n log n comparisons. <strong>Θ (Theta)</strong> is a tight bound — "exactly this growth rate." Merge sort is Θ(n log n): both the upper and lower bounds are n log n.</p>
+
+      <p>And then there's the constant factor. Two O(n) algorithms: one does 3n operations, the other does 10,000n. Both are O(n). The 10,000n one might be slower than an O(n²) algorithm for small N. Big-O tells you what happens at scale; the constant tells you whether "at scale" matters for your actual N. This is why linear search beats binary search for small arrays (~ < 50 elements) — binary search's O(log n) has a higher constant (branch mispredictions, non-sequential access) that doesn't pay off until N crosses a threshold.</p>
+
+      <h2>Amortized analysis: when the worst case is a liar</h2>
+
+      <p>Hash table insert is O(1) on average — except when it resizes, which is O(n). If you claim O(1) for insert, you're either ignoring resize or lying by omission. <span class="term">Amortized analysis</span> resolves this honestly: spread the cost of the expensive operation across all the cheap ones that led up to it.</p>
+
+      <p>The classic case is a dynamic array (Python's <code>list</code>, Java's <code>ArrayList</code>, Go's slice). Appending is O(1) — until the array is full and must be reallocated and copied, which is O(n). If you double capacity each time, resize happens at sizes 1, 2, 4, 8, 16, 32, ... The total cost of n appends is: n cheap appends + (1 + 2 + 4 + 8 + ... + n/2) copies ≈ n + n = 2n. Amortized per-append: O(1). The occasional O(n) resize doesn't change the average.</p>
+
+      <p>Hash table insert with resize is amortized O(1) by the same argument. The key insight: the expensive operations are rare enough that their cost, spread out, is still constant per operation.</p>
+
+      <div class="beat">
+        <span class="beat-tag">predict</span>
+        A dynamic array grows by adding 10 slots each resize instead of doubling. n appends — what's the amortized cost per append now? And why does every real implementation double instead?
+      </div>
+
+      <p>With fixed-increment growth, resizes happen at n/10, 2n/10, 3n/10, ... The total copy cost is roughly n²/20 — amortized O(n) per append. Doubling gives O(1); fixed-increment gives O(n). The ratio of the growth policy determines the amortized complexity. This is not a detail — it's why garbage-collected languages with growable arrays double rather than add-a-few.</p>
+
+      <h2>Where it sits on the map</h2>
+
+      <p>Big-O is the analytical lens you apply to every other topic on this map. It's how you know a <strong>hash table</strong> lookup is O(1) average, O(n) worst; how you see that a <strong>B-tree</strong> lookup is O(log n) with a high fan-out making the constant tiny; how you understand that <strong>consistent hashing</strong> key reassignment is O(1/N) of the key space per membership change.</p>
+
+      <p>It's not a topic you learn once and move on from — it's a habit of thinking about growth curves that compounds with every new data structure and algorithm you encounter.</p>
+
+      <div class="lens">
+        <span class="lens-tag">watch out</span>
+        Big-O makes two assumptions that reality doesn't: uniform cost per operation (RAM model) and infinite addressable memory. A hash table lookup is O(1) in the RAM model; on real hardware, cache misses make some O(1) operations 100× more expensive than others. And an algorithm that's O(n) in time but O(n²) in memory will exhaust RAM long before it exhausts your patience. The theory tells you the shape of the curve; profiling tells you the constant, and the constant sometimes wins.
+      </div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">If the hash table complexity angle hooked you — </span>you've already learned <strong>hash tables</strong>, and the collision-resolution-vs-load-factor trade lives directly inside this framework.</p>
+        <p class="thread"><span class="lead-in">If you want to see the logarithmic structures — </span><strong>B-trees</strong> are O(log n) with a fan-out that makes disks happy. On your frontier.</p>
+        <p class="thread"><span class="lead-in">If the worst-case-vs-average distinction nagged at you — </span><strong>Bloom filters</strong> turn probabilistic guarantees into a data structure. Also on your frontier, and builds on hash tables.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Big-O analysis connects to hash tables, B-trees, and bloom filters">
+          <line class="edge active" x1="140" y1="100" x2="62"  y2="42"/>
+          <line class="edge active" x1="140" y1="100" x2="218" y2="42"/>
+          <line class="edge active" x1="140" y1="100" x2="140" y2="162"/>
+
+          <g class="node learned" transform="translate(62,42)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">hash tables</text>
+          </g>
+          <g class="node" transform="translate(218,42)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">B-trees</text>
+          </g>
+          <g class="node learned" transform="translate(140,162)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">bloom filters</text>
+          </g>
+          <g class="node here" transform="translate(140,100)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">big-O</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="hash-tables.html">Hash tables</a></li>
+          <li><span class="meta-line">B-trees · frontier</span></li>
+          <li><a href="bloom-filter.html">Bloom filters</a></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">CS Foundations · complexity</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

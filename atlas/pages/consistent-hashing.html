@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Consistent Hashing — Atlas</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Systems &amp; Distributed</span><span class="dot"></span>
+      <span>distribution</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Consistent Hashing</h1>
+    <p class="standfirst">How to add a server without reshuffling everything you stored — the hash-ring trick behind CDNs, distributed caches, and Dynamo-style databases.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+      <p>You have four memcached servers. Keys are distributed by <code>hash(key) % 4</code>. One server gets hot — memory's full, CPU's pegged. You add a fifth.</p>
+
+      <p><code>hash(key) % 5</code> maps nearly every key to a different server. Your cache hit rate, which was 94%, drops to roughly 20% — the hit rate you'd get from random assignment. The database behind the cache, sized for the 6% of requests that normally miss, is now fielding 80% of all traffic. It falls over. You added capacity and caused an outage.</p>
+
+      <p>This is the <span class="term">rehashing storm</span>, and the root cause isn't that modulo is dumb. It's that <em>the mapping function depends on the exact count of servers</em>. Change the count, change everything.</p>
+
+      <h2>The ring</h2>
+
+      <p>Consistent hashing, introduced by Karger et al. in 1997, changes the mapping so that adding or removing a server only moves the keys that logically belonged to that server — roughly 1/N of the total.</p>
+
+      <p>Instead of mapping keys to servers by modulo, map both keys and servers onto a circle — the <span class="term">hash ring</span>. The circle wraps around at 2<sup>64</sup> (or 2<sup>160</sup>, depending on the hash function). Every key, every server, gets a position on this ring. A key is assigned to the <em>first server encountered moving clockwise from the key's position</em>.</p>
+
+      <p>When a server joins, it inserts itself at its hashed position. It inherits keys from only one neighbor — the server clockwise from it. All other key-to-server mappings stay unchanged. When a server leaves, its keys migrate to its clockwise neighbor. In a cluster of N servers, roughly 1/N of the key space moves on a membership change.</p>
+
+      <div class="pull">Modulo reassigns nearly every key when the count changes. The ring reassigns roughly one Nth of them. That's the entire idea, and it pays for itself a thousand times over.</div>
+
+      <h2>The uneven ring — and the fix</h2>
+
+      <p>There's a catch. Hash four servers onto a 2<sup>64</sup>-sized ring and you'll get four points at roughly random positions. The arcs between them — the key ranges each server owns — will be wildly different sizes. One server might get 42% of the ring; another, 8%. The load distribution is terrible.</p>
+
+      <p>The fix is <span class="term">virtual nodes</span>: each physical server gets many positions on the ring, not just one. Hash <code>server-A-1</code>, <code>server-A-2</code>, ..., <code>server-A-256</code> — 256 points for server A, 256 for server B, and so on. By the law of large numbers, each server's total arc length converges toward its fair share. More virtual nodes → more even distribution → more memory to store them. A few hundred vnodes per server is typical.</p>
+
+      <p>Virtual nodes also solve a subtler problem: heterogeneous hardware. If server A has twice the capacity of server B, give A twice as many virtual nodes. The ring distributes load proportionally without any special-case code.</p>
+
+      <h2>What real systems do with it</h2>
+
+      <p><strong>Discord's voice servers.</strong> When Discord was growing fast, they needed to move voice channels between servers without dropping calls. They built a consistent hashing ring: each voice server registers at many points on the ring, and each channel is assigned to the nearest server clockwise. When a server is drained for maintenance, its channels slide to the next server on the ring — no call dropped, no client reconnected. They wrote about it in 2017, and it's still the architecture.</p>
+
+      <p><strong>Dynamo-style databases.</strong> Amazon's Dynamo (2007) used consistent hashing to partition data across its storage ring. Each key maps to a coordinator node, which replicates the data to the next N-1 clockwise nodes. When a node joins or leaves, only its immediate neighbors need to shuffle data. Cassandra and Riak inherited this design directly.</p>
+
+      <p><strong>CDNs and reverse proxies.</strong> NGINX's <code>hash</code> directive with <code>consistent</code> maps client IPs or URLs to upstream servers. HAProxy's <code>balance uri</code> with consistent hashing does the same. When a backend goes down, only the requests hashing to that backend are reassigned — the rest of the cache stays warm.</p>
+
+      <div class="beat">
+        <span class="beat-tag">predict</span>
+        You have 5 servers, each with 200 virtual nodes, on a consistent hashing ring. You add a 6th server, also with 200 vnodes. Before calculating: roughly what fraction of the total key space moves? And why is the answer <em>not</em> exactly 1/6?
+      </div>
+
+      <p>The expected fraction is 1/6 — the new server claims roughly 1/6 of the ring from its clockwise neighbors. But the realized fraction varies: with 1,000 total vnodes (5 × 200), the standard deviation is small but not zero. And if the new server's vnodes cluster badly (unlikely with a good hash, but possible), it could claim more or less. In practice, 200+ vnodes per server makes the deviation negligible. The deeper answer is that the new server takes keys from its clockwise neighbors only — servers on the opposite side of the ring are untouched — so the fraction of <em>keys</em> that move is 1/(N+1) on average, not the fraction of servers.</p>
+
+      <h2>Where it sits on the map</h2>
+
+      <p>Consistent hashing depends on <strong>hash tables</strong> for the hashing primitive — the same hash functions that distribute keys into buckets distribute keys onto a ring. It's a cousin to <strong>sharding</strong>: consistent hashing is one strategy for sharding (hash-based, with minimal reshuffling); range-based sharding is another (alphabetical, numerical — predictable, but hot-spot prone).</p>
+
+      <p>It's the opposite of a <strong>directory-based</strong> approach, where a centralized mapping table records which server owns which key. The directory gives perfect control (move any key anywhere) at the cost of a lookup and a SPOF. Consistent hashing gives no central state at the cost of imperfect control.</p>
+
+      <p>And it shares a deep concern with <strong>gossip protocols</strong>: both answer "how does a distributed system know who's alive and who owns what, without a central authority?" In a Dynamo-style ring, gossip spreads the ring membership; consistent hashing determines what each member owns.</p>
+
+      <h2>The costs</h2>
+
+      <p><strong>Distribution is approximately fair, not exactly fair.</strong> Even with 256 vnodes per server, the standard deviation of load is about 5–10%. For a cache, this is fine — one server running at 55% while another is at 45% is invisible. For a storage system where disks fill up, the unevenness can trigger early resharding. Some systems (like Redis Cluster) use a fixed 16,384 hash slots rather than a continuous ring precisely to bound this variance.</p>
+
+      <p><strong>Range queries don't work.</strong> Neighboring keys on the ring have unrelated hashes — <code>user:alice</code> and <code>user:bob</code> land on opposite sides. If you need to scan <code>user:*</code>, consistent hashing won't help; you'll touch every server. Range partitioning (alphabetical, numerical) supports scans but breaks the "add a server without reshuffling" property. Pick your poison.</p>
+
+      <p><strong>Membership changes are cheap, not free.</strong> When a server leaves, its keys migrate to its clockwise neighbor — ~1/N of the data. If that neighbor was already near capacity, it now has ~2/N of the data and might tip over. The 1/N guarantee is about the <em>key space</em>; the <em>load</em> shift is often worse because the departing server's load is concentrated onto one neighbor, not spread evenly. Production systems smooth this by moving data gradually in the background (Cassandra's "nodetool decommission" drains a node slowly rather than yanking it from the ring).</p>
+
+      <div class="lens">
+        <span class="lens-tag">when not to</span>
+        If your cluster size is small and static — say, 3 database replicas behind a load balancer — modulo or a static mapping is simpler and doesn't need virtual nodes. If you need strict range scans across keys, reach for range partitioning instead. And if you need the mapping to survive a split-brain (where two halves of the cluster each think the other is dead), consistent hashing alone isn't enough — you need a membership protocol with fencing tokens on top.
+      </div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">If the membership question nagged at you — </span><strong>Gossip protocols</strong> are how nodes in a consistent-hashed cluster learn who's alive. A natural pairing.</p>
+        <p class="thread"><span class="lead-in">If you want the next layer of distribution — </span><strong>Sharding &amp; partitioning</strong> is the broader topic: consistent hashing is one strategy; range, directory, and dynamic partitioning are the others.</p>
+        <p class="thread"><span class="lead-in">If the Dynamo thread hooked you — </span><strong>Quorums &amp; the R+W&gt;N rule</strong> is how Dynamo turns consistent hashing plus replication into tunable consistency. The next piece of the puzzle.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Consistent hashing connects to hash tables, sharding, and gossip protocols">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="38"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="38"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="150"/>
+          <line class="edge"        x1="62"  y1="38" x2="62"  y2="150"/>
+
+          <g class="node learned" transform="translate(62,38)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">hash tables</text>
+          </g>
+          <g class="node" transform="translate(218,38)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">sharding</text>
+          </g>
+          <g class="node" transform="translate(62,150)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">gossip</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">consistent hashing</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="hash-tables.html">Hash tables</a></li>
+          <li><span class="meta-line">Sharding · frontier</span></li>
+          <li><span class="meta-line">Gossip · frontier</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Systems &amp; Distributed · distribution</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

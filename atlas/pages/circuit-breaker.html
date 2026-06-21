@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Circuit Breakers &amp; Bulkheads — Atlas</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Systems &amp; Distributed</span><span class="dot"></span>
+      <span>reliability</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Circuit Breakers &amp; Bulkheads</h1>
+    <p class="standfirst">Stopping one failing dependency from taking the whole system down with it — the two patterns that turn a localized failure into a contained one, and why "just set a timeout" isn't enough.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+      <p>A payment service calls a fraud-detection API. One day, the fraud API gets slow — not dead, but responding in 30 seconds instead of 100 ms. The payment service's thread pool, sized for fast responses, fills up waiting. Requests pile up in the accept queue. The load balancer's health check starts failing because the payment service can't respond to <em>that</em> either. Now no one can pay — not because the payment service is broken, but because something it depends on is slow.</p>
+
+      <p>This is a <span class="term">cascading failure</span>: a fault in one component propagates through call chains until the whole system is degraded. Timeouts alone don't prevent it — if every request still tries the slow dependency, you can exhaust your thread pool waiting for timeouts. You need something that stops trying.</p>
+
+      <h2>The Circuit Breaker</h2>
+
+      <p>Michael Nygard named and popularized the pattern in <em>Release It!</em> (2007). A circuit breaker wraps a call to an external dependency and tracks outcomes. When failures cross a threshold, the breaker <span class="term">trips</span> — it stops forwarding requests to the dependency altogether and fails fast instead.</p>
+
+      <p>The breaker has three states:</p>
+
+      <p><strong>Closed.</strong> Requests flow normally. The breaker counts failures (errors, timeouts). If the failure count exceeds the threshold within a time window, it transitions to Open.</p>
+
+      <p><strong>Open.</strong> Requests are rejected immediately — the breaker fails fast without calling the dependency. This gives the dependency time to recover and prevents the caller from wasting threads on doomed attempts. After a <span class="term">reset timeout</span> (typically 30–60 seconds), the breaker transitions to Half-Open.</p>
+
+      <p><strong>Half-Open.</strong> A limited number of trial requests are allowed through. If they succeed, the breaker closes — the dependency is healthy. If they fail, it opens again — the dependency needs more time. This is the self-healing mechanism: the breaker automatically detects recovery without manual intervention.</p>
+
+      <p>The thresholds matter: too sensitive and you trip on transient blips (a single GC pause); too lenient and the system degrades before the breaker activates. Production breakers typically count failures in a rolling window — "5 failures in the last 30 seconds" rather than "5 consecutive failures" — because a single flapping dependency can look like alternating success/failure forever.</p>
+
+      <h2>Bulkheads: contain the blast radius</h2>
+
+      <p>A circuit breaker protects you from a failing <em>dependency</em>. A bulkhead protects you from a failing <em>part of yourself</em>. The name comes from ships: if the hull is breached, watertight compartments (bulkheads) contain the flooding to one section. The ship stays afloat.</p>
+
+      <p>In software, the most common bulkhead is <span class="term">thread-pool isolation</span>: assign separate thread pools to different operations. The fraud-check thread pool has 20 threads. The payment-processing thread pool has 50 threads. If fraud checks slow down, their pool fills up — but the payment pool is untouched. New payment requests still process; fraud checks queue or fail fast.</p>
+
+      <p>Without bulkheads, one slow operation saturates the shared thread pool and every other operation starves — the definition of a cascading failure. With bulkheads, the failure is contained to its compartment.</p>
+
+      <p>Other forms of bulkheading: separate connection pools per downstream service (don't let one slow database exhaust connections the cache needs), separate queues per tenant or operation type, CPU isolation via cgroups or separate processes.</p>
+
+      <div class="pull">A circuit breaker says "stop calling the broken thing." A bulkhead says "when something breaks, don't let it break everything else."</div>
+
+      <h2>Real systems that use them</h2>
+
+      <p><strong>Netflix Hystrix</strong> (now in maintenance mode, but the reference implementation) wrapped every external call in a circuit breaker with a bulkheaded thread pool. During the 2011 AWS outage, Netflix's systems largely stayed up because Hystrix tripped breakers against degraded AWS services rather than letting threads pile up. This was the production proving ground for the pattern.</p>
+
+      <p><strong>Resilience4j</strong> (Hystrix's successor, used in Spring and modern JVM stacks) provides circuit breakers, bulkheads, rate limiters, and retry as a library — lightweight, functional-style, designed for the reactive streams era.</p>
+
+      <p><strong>Envoy / Istio</strong> push circuit breaking to the service mesh layer. The sidecar proxy trips a breaker against a backend without the application knowing. This is powerful (no code change) but blunt — the proxy can only trip on connection-level signals (refused, timeout), not application-level ones ("the API returns 200 with <code>status: degraded</code>").</p>
+
+      <div class="beat">
+        <span class="beat-tag">predict</span>
+        Your circuit breaker is closed. The dependency starts returning errors slowly — one failure every 10 requests. Your threshold is "5 failures in 30 seconds." It takes 50 requests and 30 seconds to trip. During those 30 seconds, the dependency is also slow (5-second timeouts), and your thread pool of 40 threads is filling up. How many threads are consumed waiting for timeouts before the breaker trips?
+      </div>
+
+      <p>At 10 requests/second, 1 failure/second, 5 seconds per failure = roughly 5 threads held at any moment for failing calls. But the real problem is the 9 <em>successful</em> requests/second, each taking 5 seconds — 45 threads held. After 6 seconds, the 40-thread pool is exhausted. The breaker doesn't trip for 30 seconds (the counting window). The system is down for 24 seconds before the breaker even opens. This is why you combine a circuit breaker with a short timeout and a thread-pool bulkhead: the timeout limits thread occupancy; the bulkhead contains the damage; the breaker stops retrying.</p>
+
+      <h2>The patterns together</h2>
+
+      <p>Circuit breaker, bulkhead, timeout, and retry form a layered defense:</p>
+
+      <p><strong>Timeout</strong> — the innermost guard. Don't wait forever. Size it to the dependency's p99 plus some headroom.</p>
+
+      <p><strong>Retry</strong> — handle transient failures (network blip, brief overload). Must be idempotent. Retry with backoff, and cap the retry budget per request.</p>
+
+      <p><strong>Circuit breaker</strong> — when failures are sustained, stop calling. Fail fast instead of failing slowly.</p>
+
+      <p><strong>Bulkhead</strong> — when the breaker is still closed but threads are piling up, contain the damage to one compartment.</p>
+
+      <p>Each layer buys time for the layers outside it. Skip one, and the next layer faces a harder problem.</p>
+
+      <div class="lens">
+        <span class="lens-tag">when not to</span>
+        Don't circuit-break a dependency that's in the critical path with no fallback. If the checkout page can't complete without the payment gateway, tripping the breaker just turns a slow checkout into a broken one — both are failures to the user. In this case, you need a fallback (queue the payment for async processing, show a "we'll confirm shortly" page) or you accept that the dependency's availability <em>is</em> your availability. The breaker is a tool for fast failure, not a replacement for the dependency working.
+      </div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">If the flow-control angle hooked you — </span>You've already learned <strong>backpressure</strong>, and the bulkhead pattern is backpressure applied at the thread-pool level.</p>
+        <p class="thread"><span class="lead-in">If you want the next reliability layer — </span><strong>Rate limiting</strong> (token &amp; leaky bucket) is the sibling pattern that stops one caller from overwhelming a service in the first place.</p>
+        <p class="thread"><span class="lead-in">If the "how do you test this" question nagged at you — </span><strong>Chaos engineering</strong> is how you verify that breakers actually trip and bulkheads actually hold. On your frontier.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Circuit breakers connect to backpressure, rate limiting, and chaos engineering">
+          <line class="edge active" x1="140" y1="92" x2="52"  y2="38"/>
+          <line class="edge active" x1="140" y1="92" x2="228" y2="38"/>
+          <line class="edge active" x1="140" y1="92" x2="140" y2="160"/>
+          <line class="edge"        x1="52"  y1="38" x2="228" y2="38"/>
+
+          <g class="node learned" transform="translate(52,38)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">backpressure</text>
+          </g>
+          <g class="node" transform="translate(228,38)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">rate limiting</text>
+          </g>
+          <g class="node" transform="translate(140,160)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">chaos engineering</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">circuit breaker</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="backpressure.html">Backpressure</a></li>
+          <li><span class="meta-line">Rate limiting · frontier</span></li>
+          <li><span class="meta-line">Chaos engineering · frontier</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Systems &amp; Distributed · reliability</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

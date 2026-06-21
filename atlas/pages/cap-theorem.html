@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The CAP Theorem — Atlas</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Systems &amp; Distributed</span><span class="dot"></span>
+      <span>theory</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">The CAP Theorem (and what it actually says)</h1>
+    <p class="standfirst">The most-cited, most-misquoted result in distributed systems. A proof from 2000 about what a replicated store can and cannot guarantee during a partition — and why "pick two out of three" isn't it.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+      <p>Somewhere on a whiteboard in 2010, someone drew a triangle with C, A, and P at the corners, wrote "pick two" underneath, and launched a decade of architectural arguments founded on a misunderstanding. The real theorem is more precise, more useful, and more interesting.</p>
+
+      <p>Eric Brewer presented the idea at PODC 2000; Seth Gilbert and Nancy Lynch proved it formally in 2002. The theorem says: <em>any distributed shared-data system can provide at most two of Consistency, Availability, and Partition tolerance simultaneously.</em></p>
+
+      <p>The "pick two" slogan treats C, A, and P as equals — three knobs you balance. The theorem actually says something different: P isn't a knob. Partitions happen whether you pick them or not. The only real choice is: <em>during</em> a partition, do you favor consistency or availability?</p>
+
+      <h2>What the three words actually mean</h2>
+
+      <p>This is where most arguments go wrong, because the formal definitions are specific and not what the English words suggest.</p>
+
+      <p><strong>Consistency</strong> (in CAP, specifically) means <span class="term">atomic consistency</span> — also called linearizability. Every read sees the most recent write, as if there were only one copy of the data. If client A writes x=5 and acknowledges, and then client B reads x, client B must see 5. There is a single global order of all operations, and every node agrees on it. This is a much stronger claim than "eventual consistency" or "causal consistency."</p>
+
+      <p><strong>Availability</strong> means every request to a non-failing node must result in a response — not an error, not a timeout. The node must respond, even if the response is "I don't have the latest data." Crucially, availability in CAP means <em>every</em> node is available, not "the system as a whole responds." A system that redirects reads from a partitioned node to a primary is not CAP-available — the partitioned node itself couldn't respond.</p>
+
+      <p><strong>Partition tolerance</strong> means the system continues operating despite an arbitrary number of messages being lost (or delayed) between nodes. A partition is when the network drops all messages between some subset of nodes. The system must not fail — it must continue to provide consistency or availability, or degrade gracefully.</p>
+
+      <div class="pull">You don't choose whether to tolerate partitions. You choose what to give up when one happens.</div>
+
+      <h2>The proof, in one paragraph</h2>
+
+      <p>Assume the network partitions: node A can't reach node B. A client writes x=5 to node A. Node A must either accept the write (preserving availability) or reject it (preserving consistency — it can't guarantee B will see it). If A accepts, and a client reads x from node B, B doesn't know about the write — so it either returns stale data (preserving availability, violating consistency) or refuses to answer (preserving consistency, violating availability). A single partitioned node cannot be both available and consistent. The proof is this simple because it's a constructive counterexample: here is a scenario where you must choose.</p>
+
+      <h2>CP vs AP: the real trade</h2>
+
+      <p>Systems that pick <strong>CP</strong> (consistent + partition-tolerant) sacrifice availability during a partition. The canonical example is a distributed lock service like etcd or ZooKeeper using Raft: if a node can't reach a quorum, it refuses reads and writes rather than serve potentially stale data. The system is unavailable, but the data it serves is always correct.</p>
+
+      <p>Systems that pick <strong>AP</strong> (available + partition-tolerant) sacrifice consistency during a partition. Dynamo, Cassandra (tunable, but default AP), and most CDNs accept that different nodes will return different values during a partition and resolve conflicts later — via last-write-wins, CRDTs, or application-level merge.</p>
+
+      <p><strong>CA</strong> (consistent + available) is the "pick two" trap. A CA system is one that works perfectly when there's no partition. That's just a non-distributed system. Single-node databases are CA. Once you distribute across a network, partitions are physical reality — network cables get cut, switches fail, GC pauses look like partitions. A distributed CA system doesn't exist.</p>
+
+      <div class="beat">
+        <span class="beat-tag">your call</span>
+        You're building a payment ledger. During a network partition, each shard can still receive writes. After the partition heals, you discover two shards both accepted a transfer from the same account at the same time, overdrawing it. Was this system CP or AP? And which choice should it have made?
+      </div>
+
+      <p>The system was AP — it accepted writes during the partition. A payment ledger should almost certainly be CP: refuse writes during a partition and reconcile afterward from a single source of truth, rather than accept conflicting writes that put an account into an invalid state. The cost of unavailability (declined transactions for a few seconds) is lower than the cost of inconsistency (money created or destroyed).</p>
+
+      <h2>Why the theorem is both essential and incomplete</h2>
+
+      <p>CAP tells you what's <em>impossible</em> — you cannot have all three during a partition. It doesn't tell you what to do when there's <em>no</em> partition, which is most of the time. Real systems don't pick one label and wear it forever. They make the trade per-operation: most reads can be eventually consistent; a balance check during checkout should be strongly consistent. And during normal operation — no partition — you can have both consistency and availability, and you should.</p>
+
+      <p>The theorem also doesn't distinguish degrees. Consistency isn't binary (linearizability vs. nothing) — there's causal consistency, sequential consistency, read-your-writes. Availability isn't binary — a system that responds in 50 ms is differently available from one that responds in 10 seconds. CAP draws a sharp line because the proof requires it; engineering lives in the gray area around the line.</p>
+
+      <div class="lens">
+        <span class="lens-tag">watch out</span>
+        When someone says "this database is CP," they're summarizing a design choice, not stating a mathematical fact. Most "CP" databases are actually CP for writes and eventually consistent for reads by default. And nearly every real system is actually partition-tolerant — the question is what it sacrifices during one. Ask: "during a partition, what does this system give up first?" The answer is more useful than a two-letter label.
+      </div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">If the "how do you agree during a split" question hooked you — </span><strong>Consensus: Raft &amp; Paxos</strong> is how CP systems actually agree on state. On your frontier.</p>
+        <p class="thread"><span class="lead-in">If the AP side interests you — </span><strong>Eventual consistency</strong> is what AP systems promise instead. Wrong now, right later — and the design space that makes it work.</p>
+        <p class="thread"><span class="lead-in">If you want the practical reconciliation tools — </span><strong>CRDTs</strong> are data structures that merge without conflicts, the magic under collaborative editors and AP databases.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: CAP theorem connects to consensus, eventual consistency, and CRDTs">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="36"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="36"/>
+          <line class="edge active" x1="140" y1="92" x2="140" y2="160"/>
+          <line class="edge"        x1="62"  y1="36" x2="218" y2="36"/>
+          <line class="edge"        x1="218" y1="36" x2="140" y2="160"/>
+
+          <g class="node" transform="translate(62,36)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">consensus</text>
+          </g>
+          <g class="node" transform="translate(218,36)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">eventual consistency</text>
+          </g>
+          <g class="node" transform="translate(140,160)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">CRDTs</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">CAP theorem</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><span class="meta-line">Consensus · frontier</span></li>
+          <li><span class="meta-line">Eventual consistency · frontier</span></li>
+          <li><span class="meta-line">CRDTs · frontier</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Systems &amp; Distributed · theory</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Coupling &amp; Cohesion — Atlas</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Design &amp; Architecture</span><span class="dot"></span>
+      <span>principles</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Coupling &amp; Cohesion</h1>
+    <p class="standfirst">The two words that explain why one codebase is pleasant to work in and another is tar — and why "low coupling, high cohesion" is the advice everyone agrees on and almost nobody can operationalize.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+      <p>You open a codebase you've never seen. Within ten minutes, you either have a rough sense of where things live and can make a small change confidently, or you're three layers deep in a 900-line function that touches the database, formats an email, and calls a third-party API, and you're afraid to change anything. The first codebase has low coupling and high cohesion. The second has neither.</p>
+
+      <p>Larry Constantine and Edsger Dijkstra wrote about these ideas in the late 1960s. They've been core to software design for over 50 years, and they're still the best diagnostic tool for why a system feels the way it feels.</p>
+
+      <h2>Coupling: how much A knows about B</h2>
+
+      <p><span class="term">Coupling</span> measures the degree of interdependence between two modules. If changing module A forces you to change module B, they're coupled. The goal is <em>low</em> coupling — modules should be connected by narrow, stable contracts, not by shared internals.</p>
+
+      <p>Coupling comes in degrees, and the degrees matter:</p>
+
+      <p><strong>Content coupling</strong> (worst). One module reaches into another's internal data — reads its private field, modifies its internal state, depends on its implementation. A one-line change in the callee can silently break the caller. This is the coupling that makes codebases untouchable.</p>
+
+      <p><strong>Common coupling.</strong> Two modules share a mutable global variable. They're coupled through that variable: changing when or how one writes to it affects the other. Global config that never changes after startup is fine (low temporal coupling); a global <code>current_user</code> that every function reads is a bug factory.</p>
+
+      <p><strong>Control coupling.</strong> Module A passes a flag to module B that changes B's behavior. <code>process_order(order, is_priority=True)</code> — A knows about B's internal branching. The caller is coupled to the callee's control flow.</p>
+
+      <p><strong>Stamp coupling.</strong> Module A passes a large data structure to module B, but B only uses three fields. B is coupled to the structure's shape, not its content. Refactoring the structure breaks B even though B doesn't use the changed fields. Pass only what's needed (<code>user.email</code>, not the whole <code>user</code> object).</p>
+
+      <p><strong>Data coupling</strong> (best). Modules communicate through small, well-defined parameters. They share no state, reach into no internals, pass no control flags. This is the target.</p>
+
+      <div class="pull">The rule of thumb: if you can't describe what two modules expect from each other in one sentence, they're too coupled.</div>
+
+      <h2>Cohesion: how much the stuff inside A belongs together</h2>
+
+      <p><span class="term">Cohesion</span> measures how strongly the elements within a single module relate to each other. The goal is <em>high</em> cohesion: everything in a module serves a single purpose. The module has one reason to change.</p>
+
+      <p><strong>Coincidental cohesion</strong> (worst). Elements are grouped arbitrarily — a <code>utils.py</code> with a function that validates email addresses next to one that formats file sizes for humans. They share nothing except the misfortune of being in the same file. This is the most common and most easily fixed cohesion failure.</p>
+
+      <p><strong>Logical cohesion.</strong> Elements do related-sounding things but operate on different data. An <code>IOModule</code> that reads CSV, writes JSON, and streams video — all I/O, but the concerns are unrelated. The module has a theme, not a purpose.</p>
+
+      <p><strong>Temporal cohesion.</strong> Elements are grouped because they all happen at the same time. An <code>init()</code> function that connects to the database, starts a metrics server, and warms the cache. These things share timing but not purpose — debugging one means reading about the others.</p>
+
+      <p><strong>Communicational cohesion.</strong> Elements operate on the same data. A module with <code>validate_email()</code>, <code>normalize_email()</code>, and <code>send_email()</code> all working on email data. Reasonable, but still mixed: validation and sending are different responsibilities even though they share a data type.</p>
+
+      <p><strong>Functional cohesion</strong> (best). Every element in the module contributes to a single, well-defined task. <code>EmailValidator</code> validates emails. <code>InvoiceRenderer</code> renders invoices. The name describes everything it does, and it does nothing the name doesn't describe.</p>
+
+      <h2>Why they move together</h2>
+
+      <p>Low coupling and high cohesion are two sides of the same design coin. When a module has high cohesion — it does one thing — the interfaces it exposes to the rest of the system tend to be narrow and stable (low coupling). When modules are loosely coupled, each one is free to refactor its internals without cascading changes — which makes it feasible to keep each one cohesive.</p>
+
+      <p>The reinforcing cycle cuts both ways. Tight coupling between two modules makes it hard to refactor either one, so responsibilities drift and cohesion degrades. Low cohesion makes a module present a wide, unstable interface, which tightens coupling with everything that depends on it. These codebases don't fail from one big mistake — they degrade through a thousand small compromises, each one making the next one easier.</p>
+
+      <h2>What this looks like in practice</h2>
+
+      <p><strong>The test tells you first.</strong> If testing a module requires mocking ten dependencies and constructing a dozen fixtures, the coupling is too high. A module with low coupling can be tested with one or two mocks. This is why testability and good design correlate — tests punish tight coupling by making it painful.</p>
+
+      <p><strong>Import statements are coupling measurements.</strong> A file that imports 40 things is coupled to 40 other modules. Some of those imports belong elsewhere. Kent Beck's rule: if a class has more than ~7 dependencies, it's probably doing too many things (low cohesion) or reaching too far into its neighbors (high coupling).</p>
+
+      <p><strong>Changes that always travel together.</strong> If every change to the billing module also requires a change to the user module, those modules are coupled — probably through a shared data structure, a fragile interface, or a responsibility that's split between them. The fix is either moving the responsibility entirely into one module or formalizing the boundary between them with a stable contract.</p>
+
+      <div class="beat">
+        <span class="beat-tag">your call</span>
+        You're reviewing a PR. The <code>OrderService</code> now imports <code>EmailTemplate</code> to format order-confirmation emails. Before you comment: is the problem coupling, cohesion, or both? And what's the one-sentence rule you'd give the author?
+      </div>
+
+      <p>It's both. <code>OrderService</code> is now coupled to <code>EmailTemplate</code> — a change to email formatting forces a change to order processing. And <code>OrderService</code> now has lower cohesion: it processes orders <em>and</em> formats emails, two different responsibilities. The fix: <code>OrderService</code> emits an <code>OrderPlaced</code> event; a separate <code>OrderConfirmationEmailSender</code> listens for the event and owns the email formatting. The coupling shifts from direct dependency (bad) to event contract (better). The cohesion improves because each module does one thing.</p>
+
+      <div class="lens">
+        <span class="lens-tag">when not to</span>
+        "Low coupling, high cohesion" can be over-applied into a maze of micro-modules, each doing one microscopic thing, connected by an explosion of interfaces. The cure becomes worse than the disease. A module should be cohesive — one reason to change — but that "reason" is a human-scale concept, not a compiler-scale one. <code>EmailValidator</code> is a reasonable module. Splitting it into <code>EmailSyntaxChecker</code>, <code>EmailDomainResolver</code>, and <code>EmailMXLookup</code> is a parody. The unit of cohesion is whatever a teammate can hold in their head and change confidently.
+      </div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">If the "how should modules talk to each other" question hooked you — </span><strong>Hexagonal / Ports &amp; Adapters</strong> is a pattern for defining clean boundaries between a core domain and everything outside it. On your frontier.</p>
+        <p class="thread"><span class="lead-in">If the naming-and-responsibility angle interests you — </span><strong>Domain-Driven Design, the useful parts</strong> is about finding the right boundaries. Bounded contexts, ubiquitous language — the human side of cohesion.</p>
+        <p class="thread"><span class="lead-in">If the anti-pattern side intrigues you — </span><strong>DRY, WET &amp; the wrong abstraction</strong> is about what happens when coupling and cohesion are applied mechanically. "Don't repeat yourself" quietly causes as many messes as it prevents.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Coupling and cohesion connect to hexagonal architecture, DDD, and DRY">
+          <line class="edge active" x1="140" y1="100" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="100" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="100" x2="140" y2="162"/>
+          <line class="edge"        x1="62"  y1="40" x2="218" y2="40"/>
+
+          <g class="node" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">hexagonal</text>
+          </g>
+          <g class="node" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">DDD</text>
+          </g>
+          <g class="node" transform="translate(140,162)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">DRY &amp; WET</text>
+          </g>
+          <g class="node here" transform="translate(140,100)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">coupling &amp; cohesion</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><span class="meta-line">Hexagonal · frontier</span></li>
+          <li><span class="meta-line">DDD · frontier</span></li>
+          <li><span class="meta-line">DRY &amp; WET · frontier</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Design &amp; Architecture · principles</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

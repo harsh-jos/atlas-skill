@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bloom Filters — Atlas</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>CS Foundations</span><span class="dot"></span>
+      <span>probabilistic</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Bloom Filters</h1>
+    <p class="standfirst">A set that is wrong on purpose — false positives in exchange for being absurdly small and fast. The trade that makes it worth it, and the math behind the magic number of hash functions.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+      <p>You're building a URL-shortener. Before assigning a new short code, you want to check it's not already in use. The obvious answer is a database lookup — but that's a disk seek per request. A cache helps for codes that exist, but for new codes — which by definition aren't in the cache — you still hit disk to confirm the miss. Most codes proposed will be new. Each proposal costs a disk seek.</p>
+
+      <p>A Bloom filter in front of the database changes this. It's a probabilistic set that fits entirely in memory — a few megabytes for billions of entries. Query it: "have you seen this code before?" If it says <em>no</em>, the answer is guaranteed correct — the code is definitely new, no disk seek needed. If it says <em>yes</em>, the code <em>might</em> exist, and you fall through to the database to confirm. Most answers are "no." Most disk seeks are avoided.</p>
+
+      <div class="pull">A Bloom filter never says yes incorrectly. It only says no incorrectly — never.</div>
+
+      <h2>The mechanism</h2>
+
+      <p>A Bloom filter is a bit array of m bits, initially all zero, plus k independent hash functions, each mapping an element to a position in [0, m).</p>
+
+      <p><strong>Insert:</strong> hash the element with all k functions. Set each of the k resulting bits to 1.</p>
+
+      <p><strong>Query:</strong> hash the element with all k functions. If <em>all</em> k bits are 1, return "possibly in set." If <em>any</em> bit is 0, return "definitely not in set."</p>
+
+      <p>That's the whole thing. The "possibly" comes from overlap: bits set by different elements can conspire to make a never-inserted element look present. The false-positive rate is a function of m (array size), n (number of inserted elements), and k (number of hash functions).</p>
+
+      <h2>The math that picks k</h2>
+
+      <p>After inserting n elements, the probability a specific bit is still 0 is (1 − 1/m)<sup>kn</sup> ≈ e<sup>−kn/m</sup>. For a false positive, all k bits for the queried element must be 1, even though the element was never inserted. That probability:
+      ε ≈ (1 − e<sup>−kn/m</sup>)<sup>k</sup>.</p>
+
+      <p>For fixed m and n, the optimal k minimizes this. Take the derivative, set to zero, and you get:
+      k = (m/n) · ln 2 ≈ 0.693 · m/n. At this optimum, the false-positive rate is ε ≈ (0.6185)<sup>m/n</sup>.</p>
+
+      <p>Concretely: to store 1,000,000 elements at a 1% false-positive rate, you need roughly m = −n · ln ε / (ln 2)² ≈ 9.6 million bits ≈ 1.2 MB, with k ≈ 7 hash functions. That's 1.2 MB for a million-element set. A hash set storing 1,000,000 32-bit hashes would be ~32 MB minimum, plus overhead for collision resolution — 25–50× larger.</p>
+
+      <div class="beat">
+        <span class="beat-tag">predict</span>
+        You double k from its optimal value — twice as many hash functions. The false-positive rate goes up. Before calculating: why? What's the intuition for too many hash functions making the filter <em>worse</em>?
+      </div>
+
+      <p>With too many hash functions, each insert sets more bits. The bit array saturates — too many 1s. When you query a never-inserted element, the chance that all k bits happen to be 1 (by coincidence of other insertions) rises. At the extreme, if k = m, every element sets m bits and the filter is all 1s — the false-positive rate is 100%. The optimum k balances: enough hash functions to make accidental collision unlikely, few enough that the array doesn't drown in 1s.</p>
+
+      <h2>What you can't do with a Bloom filter</h2>
+
+      <p><strong>You can't delete.</strong> Setting bits back to 0 would also remove any other element that shared that bit. There's a variant — the <span class="term">Counting Bloom Filter</span> — where each slot is a small counter instead of a bit. Insert increments; delete decrements. At 4 bits per counter, overflow (an element inserted 16+ times at the same slot) is possible but astronomically unlikely.</p>
+
+      <p><strong>You can't enumerate.</strong> The filter stores the <em>existence</em> of elements, not the elements themselves. You can't iterate it. It's a membership oracle, not a collection.</p>
+
+      <p><strong>You can't resize.</strong> Once the bit array hits its false-positive budget, you can't grow it without the original elements (to re-insert into a larger filter). Production systems often pair a Bloom filter with a write-ahead log of inserts so the filter can be rebuilt from scratch.</p>
+
+      <h2>Where they actually live</h2>
+
+      <p><strong>LSM-tree databases</strong> (Cassandra, RocksDB, LevelDB) use Bloom filters to skip disk lookups for non-existent keys. An LSM-tree has multiple sorted files on disk; a query checks the in-memory Bloom filter for each file before doing a disk seek. Without Bloom filters, every point query would touch every file.</p>
+
+      <p><strong>CDN cache eviction.</strong> Akamai uses Bloom filters to track which URLs are in cache across edge servers. A false positive means fetching from origin unnecessarily — a small cost paid rarely.</p>
+
+      <p><strong>Chrome's Safe Browsing.</strong> Google distributes a Bloom filter of malicious URL prefixes to every Chrome install. The browser checks locally; a "yes" triggers a real lookup to Google's servers for confirmation. Most URLs are safe, so most checks are local and instant.</p>
+
+      <p><strong>Spell checkers.</strong> A Bloom filter of dictionary words tells you in O(k) whether <code>color</code> is a word. A false positive means missing a misspelling — at 0.01%, essentially never.</p>
+
+      <div class="lens">
+        <span class="lens-tag">when not to</span>
+        If you need deletion, enumeration, or guaranteed no-false-positives, a Bloom filter is wrong. A hash set gives you exact membership. A Bloom filter trades exactness for size — and if your dataset fits comfortably in memory, that trade isn't worth making. Also, for tiny N (< ~10,000), a sorted array with binary search is simpler, exact, and still fast. Bloom filters earn their keep at scale: millions to billions of elements.
+      </div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">If the probabilistic angle hooked you — </span><strong>HyperLogLog</strong> uses similar ideas to count distinct elements in a few kilobytes. A cousin in the probabilistic data-structure family.</p>
+        <p class="thread"><span class="lead-in">If you want to see where Bloom filters live — </span><strong>LSM-trees</strong> use Bloom filters to skip disk reads. On your frontier, and a natural next layer down the storage stack.</p>
+        <p class="thread"><span class="lead-in">If the "can't delete" constraint interested you — </span><strong>Content-addressed storage</strong> (Git, IPFS) solves the same problem from the other direction: name things by hash, and deletion becomes impossible by design.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Bloom filters connect to hash tables, LSM-trees, and HyperLogLog">
+          <line class="edge active" x1="140" y1="100" x2="62"  y2="42"/>
+          <line class="edge active" x1="140" y1="100" x2="218" y2="42"/>
+          <line class="edge active" x1="140" y1="100" x2="140" y2="162"/>
+
+          <g class="node learned" transform="translate(62,42)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">hash tables</text>
+          </g>
+          <g class="node" transform="translate(218,42)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">LSM-trees</text>
+          </g>
+          <g class="node" transform="translate(140,162)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">HyperLogLog</text>
+          </g>
+          <g class="node here" transform="translate(140,100)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">bloom filters</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="hash-tables.html">Hash tables</a></li>
+          <li><span class="meta-line">LSM-trees · frontier</span></li>
+          <li><span class="meta-line">HyperLogLog · frontier</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">CS Foundations · probabilistic</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

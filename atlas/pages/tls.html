@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>How TLS Actually Works — Atlas</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Networking &amp; Protocols</span><span class="dot"></span>
+      <span>security</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">How TLS Actually Works</h1>
+    <p class="standfirst">The handshake that turns an open wire into a private channel — not the certificate-authority bureaucracy, but the actual cryptographic machinery that runs in the first few milliseconds of every HTTPS connection you've ever made.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+      <p>Every HTTPS connection begins with a paradox: two strangers — your browser and a server — must agree on a secret while an eavesdropper watches every message they exchange. Public-key cryptography makes this possible, and TLS is the protocol that orchestrates it, fast enough that you never notice the few hundred milliseconds it costs.</p>
+
+      <h2>What TLS gives you (and what it doesn't)</h2>
+
+      <p>TLS provides three guarantees on top of a raw TCP connection:</p>
+
+      <p><strong>Confidentiality.</strong> Nobody but you and the server can read the bytes. The connection is encrypted with a symmetric cipher — fast, provably secure, and negotiated during the handshake.</p>
+
+      <p><strong>Integrity.</strong> Nobody can modify the bytes in transit without detection. Each record carries an HMAC or AEAD authentication tag. If a single bit flips or is tampered with, the connection is torn down.</p>
+
+      <p><strong>Authentication.</strong> The server proves its identity. The client can optionally prove its identity too (mutual TLS, less common on the public internet, standard inside service meshes).</p>
+
+      <p>TLS does <em>not</em> hide metadata: an observer can see the server's IP, the SNI hostname (in TLS 1.2; encrypted in TLS 1.3's Encrypted Client Hello), the approximate data volume, and the timing of requests. Traffic analysis is a real attack; TLS prevents content inspection, not metadata surveillance.</p>
+
+      <h2>The TLS 1.2 handshake: the classic choreography</h2>
+
+      <p>A TLS 1.2 handshake takes 2 round trips (4 if you count TCP's SYN handshake). Here's every step:</p>
+
+      <p><strong>1. ClientHello.</strong> The client sends: the highest TLS version it supports, a random nonce (28 bytes), a list of cipher suites it's willing to use (e.g., <code>TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256</code>), and the server name (SNI) so the server knows which certificate to present.</p>
+
+      <p><strong>2. ServerHello + Certificate + ServerKeyExchange + ServerHelloDone.</strong> The server responds: the chosen TLS version, its own 28-byte random nonce, the chosen cipher suite, and its certificate chain (proving ownership of the domain). Then, for ECDHE key exchange: the server picks an elliptic-curve private key, computes the corresponding public point, signs it with the certificate's private key, and sends it.</p>
+
+      <p><strong>3. ClientKeyExchange.</strong> The client verifies the certificate chain (signature, expiration, domain match). Then it picks its own ECDHE private key, computes the public point, and sends it. Both sides now have each other's public keys and their own private keys. They compute the <span class="term">pre-master secret</span> via elliptic-curve Diffie-Hellman: combine your private key with the peer's public key, and math guarantees you both get the same result. An eavesdropper with both public keys cannot compute it — the discrete-log problem.</p>
+
+      <p>The pre-master secret, combined with both random nonces, is fed through a <span class="term">pseudorandom function</span> (HMAC-based in TLS 1.2) to derive the <span class="term">master secret</span>, which is then expanded into four session keys: client-write encryption key, server-write encryption key, client-write MAC key, server-write MAC key.</p>
+
+      <p><strong>4. ChangeCipherSpec + Finished.</strong> Both sides send a message that says "everything after this is encrypted with the session keys" followed by a Finished message — the first encrypted record, containing a MAC of the entire handshake transcript. If the Finished messages verify, both sides saw the same handshake and no one tampered with it.</p>
+
+      <div class="pull">The Diffie-Hellman trick: you and I exchange public numbers, combine them with our private numbers, and arrive at the same shared secret — while an observer who sees both public numbers learns nothing useful.</div>
+
+      <h2>TLS 1.3: faster, simpler, and forward-secret by default</h2>
+
+      <p>TLS 1.3 (RFC 8446, 2018) cut the handshake to 1 round trip — and 0-RTT for resumed connections — by removing everything that had been broken or was unnecessary:</p>
+
+      <p><strong>Static RSA key exchange is gone.</strong> In TLS 1.2, one mode used RSA: the client encrypted the pre-master secret with the server's RSA public key from the certificate. This meant anyone who later obtained the server's private key could decrypt all past connections — no <span class="term">forward secrecy</span>. TLS 1.3 mandates ephemeral Diffie-Hellman: every connection uses a fresh key pair, so compromising the long-term certificate key reveals nothing about past sessions.</p>
+
+      <p><strong>Fewer cipher suites.</strong> TLS 1.2 had ~300 cipher suites; TLS 1.3 has 5. Everything non-AEAD (CBC mode, RC4, static RSA) was removed. AEAD (authenticated encryption with associated data) combines encryption and integrity in one operation — you can't forget to MAC after encrypting.</p>
+
+      <p><strong>The server sends its key share immediately.</strong> In TLS 1.3, the ClientHello guesses which key-exchange group the server supports (almost certainly X25519) and includes the client's public key share. The server responds with its public key share in ServerHello — one round trip saved. If the client guessed wrong, the server sends a HelloRetryRequest, and the client retries; this happens essentially never in practice.</p>
+
+      <p><strong>0-RTT resumption.</strong> If you've connected to a server before, TLS 1.3 can send application data in the first flight — before any round trip completes. The client uses a pre-shared key (PSK) from the previous session to encrypt early data. The trade: 0-RTT data is not forward-secret (replayable if the PSK is compromised) and susceptible to replay attacks. Servers typically limit 0-RTT to idempotent requests (GETs, not POSTs).</p>
+
+      <h2>The certificate: who vouches for whom</h2>
+
+      <p>The handshake's key exchange proves the server possesses the private key matching the certificate. But how does the client know the certificate belongs to the right server? The certificate chain:</p>
+
+      <p>The server's certificate is signed by an intermediate CA's private key. The intermediate's certificate is signed by a root CA's private key. The root CA's certificate is self-signed and shipped with the OS or browser. The client verifies each link in the chain: signature valid, not expired, not revoked (via OCSP stapling or CRL), and the domain matches (via the certificate's SAN field).</p>
+
+      <p>This is the Public Key Infrastructure (PKI). It's a trust-on-first-use model: you trust the root CAs your OS trusts. If any of them is compromised (and they have been — DigiNotar, 2011; WoSign, 2016), every domain under that CA is at risk.</p>
+
+      <div class="beat">
+        <span class="beat-tag">predict</span>
+        An attacker controls a root CA and issues a certificate for <code>google.com</code>. They MITM your connection to Google, presenting this fraudulent certificate. What detects this? And why did Certificate Transparency change the answer?
+      </div>
+
+      <p>Before Certificate Transparency (CT), nothing automatically detected this — the certificate was validly signed, and the attack was invisible unless someone noticed the certificate wasn't the one Google's known pin set expected (HPKP, now deprecated). CT (mandatory in Chrome since 2015) requires CAs to publish every certificate they issue to public, append-only logs. Domain owners and browsers monitor these logs; a fraudulent certificate for <code>google.com</code> is visible to Google within minutes. CT turned a silent failure mode into a loud one.</p>
+
+      <div class="lens">
+        <span class="lens-tag">watch out</span>
+        TLS encrypts the connection, not the endpoints. If the server is compromised, your data is exposed regardless of TLS. If the client has malware, TLS doesn't help. And if you're using TLS but your application code logs the plaintext, the cryptographic guarantees are irrelevant. TLS is transport security — it protects data in flight, not at rest and not in memory.
+      </div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">If the public-key math hooked you — </span><strong>Public-key cryptography</strong> digs into the actual algorithms: RSA, elliptic curves, and the discrete-log assumption that makes Diffie-Hellman work. On your frontier.</p>
+        <p class="thread"><span class="lead-in">If the transport layer interests you — </span><strong>HTTP/1.1 → 2 → 3</strong> is the story of what runs on top of TLS, and why HTTP/3 replaced TCP with QUIC. On your frontier.</p>
+        <p class="thread"><span class="lead-in">If the service-mesh side appeals — </span>Mutual TLS (mTLS) between services, not just client-to-server, is how Istio and Linkerd secure inter-service traffic without application changes.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: TLS connects to public-key crypto, HTTP evolution, and TCP">
+          <line class="edge active" x1="140" y1="100" x2="62"  y2="42"/>
+          <line class="edge active" x1="140" y1="100" x2="218" y2="42"/>
+          <line class="edge active" x1="140" y1="100" x2="140" y2="160"/>
+          <line class="edge"        x1="62"  y1="42" x2="140" y2="160"/>
+
+          <g class="node" transform="translate(62,42)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">public-key crypto</text>
+          </g>
+          <g class="node" transform="translate(218,42)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">HTTP evolution</text>
+          </g>
+          <g class="node" transform="translate(140,160)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">TCP deep dive</text>
+          </g>
+          <g class="node here" transform="translate(140,100)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">TLS</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><span class="meta-line">Public-key crypto · frontier</span></li>
+          <li><span class="meta-line">HTTP evolution · frontier</span></li>
+          <li><span class="meta-line">TCP deep dive · frontier</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Networking &amp; Protocols · security</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>
