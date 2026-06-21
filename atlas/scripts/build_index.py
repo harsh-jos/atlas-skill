@@ -46,11 +46,11 @@ def main() -> int:
         bucket = by_domain.get(t.get("domain"))
         (orphans if bucket is None else bucket).append(t)
 
-    # domains ordered by the atlas; topics within: learned first, then frontier, alpha by title
+    # domains ordered by the atlas-go; topics within: learned first, then frontier, alpha by title
     def topic_sort(t):
         return (0 if t.get("status") == "learned" else 1, t.get("title", "").lower())
 
-    name = esc(meta.get("name", "Atlas"))
+    name = esc(meta.get("name", "Atlas Go"))
     subtitle = esc(meta.get("subtitle", "a breadth-first map of the things worth knowing"))
 
     parts = []
