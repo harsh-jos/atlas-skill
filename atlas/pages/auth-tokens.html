@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sessions, JWTs &amp; OAuth — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Security</span><span class="dot"></span>
+      <span>identity</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Sessions, JWTs &amp; OAuth</h1>
+    <p class="standfirst">Who you are, proven to a server that has no memory of you — and the three approaches to authentication that define the web.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>Authentication is the oldest problem in web security, and the answer keeps changing because the constraints keep changing. A monolith with server-side rendering can use session cookies and server-side state. A mobile app talking to a dozen microservices needs something stateless — the auth server can't be involved in every service-to-service call. A SaaS platform that wants users to "log in with Google" needs delegation — the user grants limited access without sharing their password.</p>
+
+<p>These three answers — sessions, JWTs, and OAuth — are not competitors. They solve different parts of the same problem, and a production system in 2026 likely uses all three at different layers. The confusion comes from treating them as either/or choices when they're components in the same stack.</p>
+
+<h2>Session tokens: the server remembers</h2>
+
+<p>The simplest model: user logs in (username + password), server validates credentials, server creates a session (a record in a database or cache with an expiry), server sends the session ID back as a cookie (<code>Set-Cookie: session_id=a1b2c3; HttpOnly; Secure; SameSite=Lax</code>). Every subsequent request includes the cookie; the server looks up the session to identify the user.</p>
+
+<div class="pull">A session token is a pointer. The server holds the data; the client holds the key.</div>
+
+<p>The advantages are real: the server can invalidate a session instantly (delete the record), session data doesn't travel over the network (the cookie is opaque), and the client can't tamper with the session contents (they only have the ID). The disadvantage: the server must store and look up session state, which is stateful and doesn't scale horizontally without a shared session store (Redis, database). Every request that needs authentication requires a session lookup, and that lookup becomes a single point of failure and a latency floor.</p>
+
+<p>Sessions are the right choice for server-rendered web apps with modest scale and no API surface beyond the browser. They're simple, well-understood, and the cookie security flags (<code>HttpOnly</code> prevents JS access, <code>Secure</code> restricts to HTTPS, <code>SameSite</code> restricts cross-origin sending) give you a solid defense against the most common attacks.</p>
+
+<h2>JWTs: the client holds the data</h2>
+
+<p>A <span class="term">JSON Web Token</span> inverts the session model. Instead of storing state on the server and sending an opaque ID to the client, encode the relevant claims directly into a signed (and optionally encrypted) token that the client carries:</p>
+
+<pre class="pre-label">A JWT, decoded
+Header:   {"alg": "RS256", "typ": "JWT"}
+Payload:  {"sub": "user_42", "email": "alice@example.com", "role": "admin",
+           "iat": 1687381200, "exp": 1687384800}
+Signature: base64(RSASHA256(header.payload, private_key))</pre>
+
+<p>The server can verify the token without any database lookup — just check the signature against the public key. This is <em>stateless</em> authentication: any service with the public key can authenticate the request. No shared session store, no Redis dependency, no network round-trip to verify identity.</p>
+
+<p>The cost: you can't revoke a JWT. Once issued, it's valid until it expires (the <code>exp</code> claim). If a user's permissions change, or their account is disabled, the JWT they already have still says "admin." The workarounds are all imperfect: short expiry times (5–15 minutes) with refresh tokens (which <em>are</em> stored server-side and can be revoked), token revocation lists (which reintroduce server-side lookups, defeating the stateless purpose), or just accepting the risk window.</p>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  You're building an API and choose JWTs for stateless auth. You put the user's role (<code>"admin"</code>) in the JWT payload. Three months later, an admin is demoted. Their JWT still has 55 minutes until expiry. What can they access during those 55 minutes, and what's the cheapest fix that doesn't involve a database lookup on every request?
+</div>
+
+<p>They can access anything the "admin" role permits for those 55 minutes. The JWT is still valid, still signed, still says "admin." The cheapest fix that preserves statelessness: <strong>short-lived access tokens.</strong> Set <code>exp</code> to 5 minutes, not 1 hour. The demoted admin loses access within 5 minutes. To avoid making users log in every 5 minutes, issue a <span class="term">refresh token</span> (stored server-side, revocable) that the client uses to get a new access token. The access token is stateless; the refresh token is stateful. You get the best of both: most requests are authenticated without a database lookup (the access token), and revocation works (the refresh token won't issue a new access token for a disabled account).</p>
+
+<h2>OAuth 2.0 & OIDC: delegation, not authentication</h2>
+
+<p>OAuth 2.0 is not an authentication protocol — it's a <em>delegation</em> protocol. Its job is to let a user grant a third-party application limited access to their resources without sharing their password. "Log in with Google" is built on top of OAuth via <span class="term">OpenID Connect</span> (OIDC), which adds an identity layer to OAuth 2.0.</p>
+
+<p>The dance involves four parties:</p>
+
+<ol>
+  <li><strong>Resource Owner:</strong> the user, who owns the data.</li>
+  <li><strong>Client:</strong> the third-party app that wants access.</li>
+  <li><strong>Authorization Server:</strong> Google's login page, the thing the user trusts.</li>
+  <li><strong>Resource Server:</strong> Google's API, the thing that holds the data.</li>
+</ol>
+
+<p>The flow: the client redirects the user to the authorization server → the user authenticates and grants permission → the authorization server redirects back with an <strong>authorization code</strong> → the client exchanges the code (server-to-server) for an <strong>access token</strong> and optionally an <strong>ID token</strong> (a JWT with identity claims). The access token is what the client presents to the resource server. The ID token is what the client reads to know who the user is.</p>
+
+<p>The authorization code step (the server-to-server exchange) is load-bearing security: the access token never touches the user's browser. The browser only sees the redirect with the code, which is useless without the client secret. This prevents token interception from browser history, referrer headers, or malicious JavaScript.</p>
+
+<h2>How to put them together in 2026</h2>
+
+<p>A realistic authentication stack in 2026:</p>
+
+<ul>
+  <li><strong>External auth:</strong> OAuth 2.0 + OIDC for "log in with Google/GitHub/Apple." Your auth server federates to the identity provider. You get an ID token (who the user is) and an access token (what they can access).</li>
+  <li><strong>API auth:</strong> Short-lived JWT access tokens (5–15 min), signed with RS256 or Ed25519. Services verify the signature locally using the public key from a JWKS endpoint. No database call per request.</li>
+  <li><strong>Web app auth:</strong> Session cookie, backed by the same auth server. The cookie stores an opaque session ID; the server maps it to the user and their JWT access token for calling downstream services.</li>
+  <li><strong>Service-to-service:</strong> mTLS or signed JWTs with short lifetimes. No user involved; the calling service's identity is proven by its certificate or its ability to sign with a private key.</li>
+</ul>
+
+<div class="lens">
+  <span class="lens-tag">the JWT footgun</span>
+  JWTs have a bewildering number of options, and most of them are dangerous. <code>alg: "none"</code> (no signature — some libraries accepted this in the past). Symmetric signatures (HS256) when you meant asymmetric (RS256) — now every service shares the signing key, and any compromised service can mint tokens for any user. The <code>jku</code> header (JWK Set URL) that tells the verifier where to fetch the public key — a vector for SSRF if the verifier follows untrusted URLs. The safe subset in 2026: RS256 or EdDSA, no <code>jku</code>, explicit algorithm whitelisting on verification, and a library that's been audited. And never put secrets in the JWT payload — the payload is base64-encoded, not encrypted. Anyone who sees the token can read the payload.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The transport layer —</span> <a href="tls.html">TLS</a> is what protects the tokens in flight. Without TLS, session cookies and JWTs are plaintext to any network observer.</p>
+        <p class="thread"><span class="lead-in">The attacker's perspective —</span> <span class="meta-line">threat modeling</span> is how you decide which authentication threats matter for your specific system and which are academic.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Auth tokens sit among TLS, public-key crypto, threat modeling, and hashing passwords">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">TLS</text>
+          </g>
+          <g class="node learned" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">public-key</text>
+          </g>
+          <g class="node" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">threat model</text>
+          </g>
+          <g class="node" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">hash passwords</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">auth tokens</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="tls.html">How TLS actually works</a></li>
+          <li><a href="public-key-crypto.html">Public-key cryptography</a></li>
+          <li><span class="meta-line">Threat modeling · frontier</span></li>
+          <li><span class="meta-line">Hashing passwords · frontier</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Security · identity</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

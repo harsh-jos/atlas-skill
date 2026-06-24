@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Idempotency — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Systems &amp; Distributed</span><span class="dot"></span>
+      <span>reliability</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Idempotency</h1>
+    <p class="standfirst">The one property that makes "just retry it" a safe instruction — and the key pattern that turns unreliable networks into reliable systems.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>A payment request times out. The client retries. The server processes both requests — charging the user twice. This is the most expensive bug class in distributed systems: the <em>double charge</em>. The network failure was transient, but the duplicate processing is permanent. And it could have been prevented with a single property: <span class="term">idempotency</span>.</p>
+
+<p>An operation is idempotent if performing it multiple times has the same effect as performing it once. <code>SET x = 5</code> is idempotent — running it twice still sets x to 5. <code>x += 5</code> is not — running it twice adds 10. In HTTP, GET, PUT, and DELETE are idempotent by specification. POST is not. But "idempotent by specification" doesn't mean "the server correctly handles duplicates" — it means the HTTP method's semantics are idempotent. Your PUT handler can still be non-idempotent if it increments a counter internally.</p>
+
+<div class="pull">Idempotency is the contract that makes retries safe. Without it, every timeout is a potential correctness bug.</div>
+
+<h2>Idempotency keys: the implementation pattern</h2>
+
+<p>The standard approach: the client generates a unique <span class="term">idempotency key</span> (a UUID) for each logical operation and sends it with every request (including retries). The server stores the key along with the response. If the server receives a request with a key it has already processed, it returns the stored response — no double charge, no duplicate side effect.</p>
+
+<pre class="pre-label">Idempotent payment, with a key
+Client:                          Server:
+POST /charges                    1. Received key "abc-123"
+Idempotency-Key: abc-123         2. Check: key "abc-123" → not found
+{amount: 50}                     3. Process charge (create txn 42)
+                                 4. Store: key "abc-123" → {txn_id: 42, status: ok}
+                                 5. Return: {txn_id: 42, status: ok}
+
+[timeout — client retries]
+POST /charges                    6. Received key "abc-123"
+Idempotency-Key: abc-123         7. Check: key "abc-123" → found!
+{amount: 50}                     8. Return stored response: {txn_id: 42, status: ok}</pre>
+
+<p>The critical detail: step 3 (process the charge) and step 4 (store the key) must be <em>atomic</em>. If the server processes the charge, crashes before storing the key, and the client retries, the charge is processed twice. The fix: store the key in the same database transaction as the operation's side effects. If the database supports unique constraints, the idempotency key is a unique column, and inserting a duplicate key fails — the server catches the constraint violation and returns the stored response.</p>
+
+<h2>The subtlety: concurrent retries</h2>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  Two retries of the same request arrive at the server simultaneously. Both check the key store — neither finds the key. Both process the operation. Both try to store the key. What prevents the double charge?
+</div>
+
+<p>The database's unique constraint on the idempotency key. The first INSERT succeeds. The second INSERT fails with a unique constraint violation. The handler for the second request catches the violation, fetches the now-stored response (which the first request stored atomically with its INSERT), and returns it. No double charge. But this requires that the idempotency key store <em>and</em> the operation's side effects are in the same database transaction — otherwise, the first request could succeed but the key INSERT fails, or vice versa. The idempotency key is not a separate service; it's a column in the same database that stores the operation's results.</p>
+
+<p>This is also why idempotency keys should be scoped to the resource: a key for "create payment for order 42" should be different from a key for "create payment for order 43," even if the client accidentally reuses the same UUID. The standard pattern: the key is a combination of the client's request ID and the resource identifier, ensuring uniqueness within the scope of the operation.</p>
+
+<h2>Where idempotency appears (and where it's missing)</h2>
+
+<ul>
+  <li><strong>Stripe / payment APIs:</strong> The canonical example. Every Stripe API accepts an <code>Idempotency-Key</code> header. Keys are stored for 24 hours. Retrying a charge with the same key returns the original result.</li>
+  <li><strong>Kafka:</strong> The idempotent producer (enabled by default in modern clients) assigns each message a producer ID and sequence number. The broker deduplicates by (producer ID, sequence number), ensuring exactly-once semantics per partition — an idempotency guarantee at the broker level.</li>
+  <li><strong>S3 / object storage:</strong> PUT Object is idempotent — uploading the same object twice results in the same object. But multipart uploads are trickier; incomplete multipart uploads accumulate and must be explicitly aborted.</li>
+  <li><strong>AWS Lambda / serverless:</strong> At-least-once invocation means your function may be called multiple times for the same event. Your function must be idempotent. AWS provides the event ID for deduplication, but the burden is on the function to use it.</li>
+</ul>
+
+<div class="lens">
+  <span class="lens-tag">the gap</span>
+  Idempotency keys prevent double-processing from retries. They don't prevent two <em>different</em> requests from creating conflicting state. If a user clicks "Pay" twice (generating two different idempotency keys), both payments go through — that's a different problem (duplicate submission), solved differently (button debouncing, confirmation modals, idempotency keys scoped to the user's session + action type). Idempotency solves the infrastructure problem (retries). It doesn't solve the product problem (preventing the user from doing a thing twice). Know which one you're solving.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The next step in the reliability stack —</span> <span class="meta-line">the exactly-once delivery myth</span> explains why "exactly once" across distributed systems is a lie, and what people actually mean by it (hint: idempotency + retries).</p>
+        <p class="thread"><span class="lead-in">The pattern for retries that don't amplify —</span> <a href="circuit-breaker.html">circuit breakers</a> prevent retries from overwhelming a struggling service, which is when idempotency matters most.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Idempotency sits among exactly-once, circuit breakers, Kafka, and event sourcing">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">exactly-once</text>
+          </g>
+          <g class="node learned" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">circuit breaker</text>
+          </g>
+          <g class="node learned" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">Kafka</text>
+          </g>
+          <g class="node learned" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">event src.</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">idempotency</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><span class="meta-line">Exactly-once delivery · frontier</span></li>
+          <li><a href="circuit-breaker.html">Circuit breakers</a></li>
+          <li><a href="kafka.html">Kafka as a log</a></li>
+          <li><a href="event-sourcing.html">Event sourcing & CQRS</a></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Systems &amp; Distributed · reliability</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

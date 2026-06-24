@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Embeddings — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>AI / ML Foundations</span><span class="dot"></span>
+      <span>representation</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Embeddings</h1>
+    <p class="standfirst">Turning words, users, or images into geometry you can do math on — the idea that quietly powers search, recommendations, and every modern language model.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>You have a million documents and you want to find the ten most relevant to a query. You could search for keyword matches — but "car" won't match "automobile," and "good for running" will match documents about jogging, not durable shoes. You could hire a thousand annotators — but your data changes daily.</p>
+
+<p>The alternative that won: represent every piece of text as a point in space, such that <strong>similar meaning → nearby points</strong>. That point is an <span class="term">embedding</span>: a dense vector of numbers (typically hundreds of dimensions) that encodes the semantic content of whatever it represents. Once you have embeddings, "find similar documents" becomes "find nearby vectors," which is a geometry problem — and geometry is fast, parallelizable, and well-understood.</p>
+
+<div class="pull">An embedding is a compression of meaning into coordinates. The distance between two embeddings isn't about characters — it's about what the text is <em>about</em>.</div>
+
+<h2>From words to vectors: the word2vec revolution</h2>
+
+<p>Before 2013, NLP treated words as discrete symbols — "cat" was index 57, "dog" was index 128, and the model had no idea they were related. The breakthrough was <span class="term">distributional semantics</span>: a word is defined by the company it keeps. If "cat" and "dog" appear in similar contexts (they're both pets, they both do things verbs describe), their embeddings should be close.</p>
+
+<p>word2vec (Mikolov et al., 2013) operationalized this with a simple idea: train a shallow neural network to predict a word from its neighbors (or vice versa), and throw away the output. Keep the hidden layer's weights — those <em>are</em> the embeddings. The result was vectors where <code>king − man + woman ≈ queen</code>, arithmetic on meaning, computed without any human ever labeling "king" and "queen" as related.</p>
+
+<pre class="pre-label">The word2vec skip-gram objective (simplified)
+For each word w in the corpus:
+  For each context word c within a window of w:
+    Maximize P(c | w) = softmax(embedding_c · embedding_w)
+
+After training, discard the output weights. The input embedding matrix IS the result.</pre>
+
+<p>The algorithm is embarrassingly simple. The result was a map of language where you could <em>do math</em> on words. That idea — train a network to solve a proxy task, keep the internal representation — underlies every embedding technique since.</p>
+
+<h2>How modern embeddings actually work</h2>
+
+<p>word2vec gave each word a single vector. But "bank" means different things in "river bank" and "bank account." The modern solution is <span class="term">contextual embeddings</span>: the vector for a word depends on the words around it. A transformer reads the entire sentence and produces a different embedding for "bank" in each context.</p>
+
+<p>The embedding models you'd use in production in 2026 work like this:</p>
+
+<ol>
+  <li><strong>Input:</strong> a chunk of text (a query, a document, a product description).</li>
+  <li><strong>Encode:</strong> a pretrained transformer (typically BERT-derived for embeddings, or a decoder-only model fine-tuned for embedding tasks) processes the text and produces a vector for each token.</li>
+  <li><strong>Pool:</strong> combine the token vectors into a single document vector. Options: take the [CLS] token's output, mean-pool all token vectors, or take the last hidden state at a specific position.</li>
+  <li><strong>Normalize:</strong> L2-normalize the result so cosine similarity reduces to a dot product.</li>
+</ol>
+
+<p>The output is a vector, typically 768 to 3072 dimensions. Two texts with similar meaning produce vectors that point in roughly the same direction. The cosine similarity between them is close to 1.0. Two unrelated texts produce vectors pointing in different directions; their cosine similarity is close to 0 (or even negative, though with modern models, truly unrelated vectors cluster around 0.2–0.4).</p>
+
+<h2>The embedding model landscape in 2026</h2>
+
+<p>You don't train your own embedding model unless you're an embedding model company. You pick one off the shelf:</p>
+
+<ul>
+  <li><strong>OpenAI <code>text-embedding-3-large</code></strong> — 3072 dimensions, state-of-the-art on MTEB benchmark, supports variable-dimension output (you can ask for 256 dimensions instead of 3072, trading accuracy for storage).</li>
+  <li><strong>Cohere Embed v3</strong> — strong on multilingual retrieval, supports input types (search_document, search_query) that let the model optimize the embedding for its role.</li>
+  <li><strong>E5 / BGE / GTE</strong> — open-source models (Microsoft, BAAI, Alibaba) that match or approach proprietary quality. The open-source embedding race is genuinely competitive.</li>
+  <li><strong>Jina AI</strong> — 8192-token context windows, strong on long-document embeddings.</li>
+</ul>
+
+<p>The key number is <span class="term">MTEB score</span> (Massive Text Embedding Benchmark) — the standard leaderboard for retrieval, clustering, classification, and semantic similarity. In 2026, the top models cluster around 65–68 on MTEB retrieval, and the gap between open and proprietary models is narrowing each quarter.</p>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  You embed every document in your database with a 3072-dimensional model. A query comes in, you embed it, and you find the top-10 documents by cosine similarity. It works great — but searching a million 3072-dimensional vectors takes seconds. What's the algorithmic fix that makes this fast, and what do you trade away?
+</div>
+
+<p>The fix is <span class="term">approximate nearest neighbor</span> (ANN) search. Algorithms like HNSW build a navigable graph over the vectors; FAISS and ScaNN quantize them into compact codes. You trade a tiny amount of recall (99.9% instead of 100%) for a thousandfold speedup — sub-millisecond search over millions of vectors. The engineering detail that bites: the embedding model and the ANN index are tightly coupled. If you change the model, you must rebuild the index, because the old vectors are in the old model's geometry and the new model's vectors live in a different coordinate system. There's no migration — it's a full re-embed and re-index.</p>
+
+<h2>Embeddings beyond text</h2>
+
+<p>The embedding trick applies to anything you can feed through a neural network:</p>
+
+<ul>
+  <li><strong>Images:</strong> CLIP (OpenAI, 2021) embeds images and text into the <em>same</em> vector space. The embedding of a photo of a cat is close to the embedding of the text "a cat." This is why you can search your photo library with words.</li>
+  <li><strong>Users & items:</strong> Collaborative filtering models produce user embeddings and item embeddings in a shared space. "Users similar to you also watched…" is nearest-neighbor search in user-embedding space.</li>
+  <li><strong>Code:</strong> Code embedding models map functions and repositories to vectors. "Find all implementations of a rate limiter" becomes a vector similarity search over your codebase.</li>
+  <li><strong>Audio:</strong> Models like Whisper and CLAP embed audio clips for speech search, music similarity, and voice cloning verification.</li>
+</ul>
+
+<p>The universal pattern is: pick a modality, train a model to produce vectors where similarity in vector space equals similarity in the thing you care about, and all downstream tasks reduce to nearest-neighbor queries.</p>
+
+<div class="lens">
+  <span class="lens-tag">the cost</span>
+  Embeddings aren't free. A 3072-dimensional vector is 12 KB (float32). A billion documents is 12 TB just for the vectors. Compressing dimensions (openai's matryoshka embeddings let you drop from 3072 to 256 with minimal accuracy loss) and quantizing to int8 or binary codes can reduce storage by 10–100x. But the fundamental trade is: more dimensions = more nuance preserved, at the cost of storage and search speed. The right dimensionality is a business decision tied to your accuracy requirements, not a model architecture choice.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">How embeddings power search —</span> <span class="meta-line">vector search & ANN</span> is the retrieval half; embeddings are the representation half. Together they replace keyword search.</p>
+        <p class="thread"><span class="lead-in">Where embeddings go next —</span> <span class="meta-line">attention</span> uses embeddings as its raw material, transforming them into context-aware representations at every layer of the transformer.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Embeddings sit among vector search, attention, RAG, and tokenization">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">vector search</text>
+          </g>
+          <g class="node" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">attention</text>
+          </g>
+          <g class="node" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">RAG</text>
+          </g>
+          <g class="node learned" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">tokenization</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">embeddings</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><span class="meta-line">Vector search & ANN · frontier</span></li>
+          <li><span class="meta-line">Attention · frontier</span></li>
+          <li><span class="meta-line">RAG · frontier</span></li>
+          <li><a href="tokenization.html">Tokenization & BPE</a></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">AI / ML Foundations · representation</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SOLID, Honestly — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Design &amp; Architecture</span><span class="dot"></span>
+      <span>principles</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">SOLID, Honestly</h1>
+    <p class="standfirst">Five principles, three of which you should actually internalize — and two that have done more harm than good.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>SOLID is the most-cited and most-misapplied set of principles in object-oriented design. Robert Martin (Uncle Bob) codified them in the early 2000s, building on work by Barbara Liskov, Bertrand Meyer, and others. They've been taught as gospel for two decades. Some of them earned it. Others have been stretched far beyond their useful domain and now cause the very problems they were supposed to prevent.</p>
+
+<p>Here they are, with the honesty that classroom versions omit.</p>
+
+<h2>S: Single Responsibility Principle</h2>
+
+<div class="pull">A class should have one reason to change.</div>
+
+<p><strong>Real meaning:</strong> A module should be responsible to one, and only one, actor (a person or group who can ask for changes). If the CFO asks for a change to the payroll report and the CTO asks for a change to the database schema, those should be in different modules — because changes from different actors arrive at different times, and a module that serves two actors will be changed for one and break for the other.</p>
+
+<p><strong>How it goes wrong:</strong> Interpreted as "a class should do one thing," which leads to classes with one method, files with one class, and a codebase where every tiny behavior lives in a separate file. That's not single responsibility — that's single <em>function</em>, and it's a structuring choice, not a principle. The right granularity: a module changes for one business reason. If two business reasons would cause you to edit the same file, split it.</p>
+
+<h2>O: Open/Closed Principle</h2>
+
+<p><strong>Statement:</strong> A module should be open for extension but closed for modification.</p>
+
+<p><strong>Honest take:</strong> In 2026, this is table stakes for library design (you can't modify a library's source, so it must be extensible) and usually overkill for application code. The OCP was designed for a world where recompilation was expensive and libraries shipped as binaries. In a world where you own the entire codebase and can refactor across module boundaries in one PR, adding an abstraction layer so you can add behavior without modifying existing code is often premature. The right heuristic: <strong>add the abstraction when the second implementation arrives, not the first.</strong> A single implementation behind an interface is a guess about how the second implementation will differ. The second implementation tells you what the interface should actually look like.</p>
+
+<h2>L: Liskov Substitution Principle</h2>
+
+<p><strong>Statement:</strong> Subtypes must be substitutable for their base types without altering the correctness of the program.</p>
+
+<p><strong>Verdict: internalize this one.</strong> LSP is the most mathematically sound of SOLID and the one that still causes real bugs when violated. The classic violation: a <code>Rectangle</code> base class with <code>setWidth</code> and <code>setHeight</code>, and a <code>Square</code> subclass that overrides <code>setWidth</code> to also set height. Code written for <code>Rectangle</code> breaks when given a <code>Square</code>, because the invariants differ (a square's width and height are coupled; a rectangle's aren't). The fix isn't inheritance — it's not using inheritance for a relationship where the subclass doesn't preserve the superclass's contracts. Composition usually wins.</p>
+
+<h2>I: Interface Segregation Principle</h2>
+
+<p><strong>Statement:</strong> No client should be forced to depend on methods it does not use.</p>
+
+<p><strong>Verdict: internalize this one — it's the API design principle.</strong> A fat interface (50 methods) forces every implementation to stub out 40 of them, and a change to any method forces a recompile of every implementation. Split the interface into role-specific ones: <code>Reader</code>, <code>Writer</code>, <code>Deleter</code>. Each client depends on the role it actually needs. This is also the principle behind <a href="hexagonal.html">ports & adapters</a>: the port is the narrow interface; the adapter is the concrete implementation.</p>
+
+<h2>D: Dependency Inversion Principle</h2>
+
+<p><strong>Statement:</strong> Depend on abstractions, not concretions.</p>
+
+<p><strong>Verdict: internalize this one, with a caveat.</strong> DIP is the principle behind <a href="dependency-injection.html">dependency injection</a> and hexagonal architecture's driven ports. High-level policy (business logic) should not depend on low-level details (which database, which HTTP library). Both should depend on abstractions. The caveat: "abstractions" doesn't mean "interfaces for everything." It means the high-level module <em>defines</em> the interface it needs, and the low-level module <em>implements</em> it. The dependency arrow points from low-level to high-level (the database adapter depends on the business logic's repository interface, not the other way around). This is the inversion: the database depends on the business logic, not vice versa.</p>
+
+<div class="lens">
+  <span class="lens-tag">the meta-principle</span>
+  SOLID was designed for large, long-lived, multi-team object-oriented codebases. If you're writing a script, a prototype, or a service that's 500 lines and will be replaced next quarter, SOLID is overhead. The principles earn their keep when the cost of <em>not</em> applying them — the cost of tangled dependencies, fragile base classes, and fat interfaces that break everything when changed — exceeds the cost of the extra abstractions. That threshold is lower than most engineers think for production systems and higher than most SOLID enthusiasts admit for small ones.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The D in practice —</span> <span class="meta-line">dependency injection</span> is the mechanical pattern that makes dependency inversion work: how do you get the right implementation into the right place without hardcoding it?</p>
+        <p class="thread"><span class="lead-in">The architecture SOLID enables —</span> <a href="hexagonal.html">hexagonal / ports & adapters</a> applies SOLID at the system boundary, with interfaces defining ports and implementations as adapters.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: SOLID sits among coupling, DI, hexagonal, and DRY">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">coupling</text>
+          </g>
+          <g class="node" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">DI</text>
+          </g>
+          <g class="node learned" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">hexagonal</text>
+          </g>
+          <g class="node" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">DRY</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">SOLID</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="coupling-cohesion.html">Coupling & cohesion</a></li>
+          <li><span class="meta-line">Dependency injection · frontier</span></li>
+          <li><a href="hexagonal.html">Hexagonal / ports & adapters</a></li>
+          <li><span class="meta-line">DRY, WET & wrong abstraction · frontier</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Design &amp; Architecture · principles</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

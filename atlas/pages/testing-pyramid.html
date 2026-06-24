@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The Testing Pyramid — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Engineering Practice</span><span class="dot"></span>
+      <span>testing</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">The Testing Pyramid (and Its Critics)</h1>
+    <p class="standfirst">How much of each kind of test — and why the shape is more contested now than when Mike Cohn drew the triangle.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>Mike Cohn's testing pyramid (2009) is the most influential diagram in software testing: write lots of unit tests, fewer integration tests, and even fewer end-to-end tests. The pyramid shape encodes an economic argument: lower-level tests are faster to write, faster to run, and more precise about what broke. Higher-level tests are more realistic but slower and more brittle. You want the bulk of your coverage at the bottom.</p>
+
+<p>For 15 years, this was uncontroversial. Then SPAs, microservices, and AI-generated code arrived, and the pyramid's assumptions started to crack.</p>
+
+<h2>The original pyramid</h2>
+
+<pre class="pre-label">The testing pyramid
+          /\
+         /E2E\         Few: end-to-end (UI tests, full system)
+        /------\
+       /Integration\    Some: integration (DB, API, service)
+      /--------------\
+     /   Unit Tests    \  Many: unit tests (functions, classes)
+    /__________________\</pre>
+
+<div class="pull">The pyramid is about feedback speed and blame precision. A failing unit test tells you exactly what line broke, in milliseconds. A failing E2E test tells you something broke, somewhere, in minutes.</div>
+
+<p>The economic logic: a unit test takes seconds to write and milliseconds to run. An E2E test takes hours to write (or maintain), minutes to run, and breaks when anything in the stack changes — often for reasons unrelated to the code change that triggered the failure. A test suite that's 90% E2E tests is a test suite that's always red for the wrong reasons, and teams learn to ignore it. A test suite that's 90% unit tests might miss integration failures (the unit works, the integration doesn't). The pyramid balances speed and confidence.</p>
+
+<h2>Why the pyramid is contested</h2>
+
+<p><strong>The microservices challenge:</strong> In a monolith, "integration test" means "test with a real database." In a microservices architecture, "integration test" means "stand up 5 services, 3 databases, and a message broker." The integration layer becomes so expensive that teams skip it and jump from unit tests directly to production monitoring. The pyramid collapses into two layers: unit tests and observability-driven canary deploys. This isn't necessarily wrong — it's a different trade, where production is the integration environment and monitoring replaces testing — but it's not the pyramid.</p>
+
+<p><strong>The frontend challenge:</strong> A React component's "unit test" is rendering it in a simulated browser (jsdom) and checking the output. Is that a unit test (it tests one component) or an integration test (it renders a DOM)? The line is blurry. The testing trophy (Kent C. Dodds) argues for inverting the pyramid for frontends: the bulk of tests should be integration tests (render the component with real state, mock the minimum), because frontend "unit tests" of pure rendering functions are brittle and low-signal.</p>
+
+<p><strong>The AI-generated code challenge:</strong> When an AI writes code and a human reviews it, the human's job is verification — does this code do what it claims? The test that answers that is an integration or E2E test, not a unit test. The unit tests verify that the code does what it <em>does</em>; the integration tests verify that what it does is what you <em>wanted</em>. In an AI-assisted workflow, the integration layer becomes more important because specification mismatches are a larger fraction of bugs than implementation errors.</p>
+
+<h2>The practical shape in 2026</h2>
+
+<p>Rather than a universal pyramid, think of it as a <strong>test portfolio</strong> whose allocation depends on the system's failure modes:</p>
+
+<ul>
+  <li><strong>Libraries and algorithms:</strong> Heavy unit tests. The failure mode is incorrect logic; unit tests catch it precisely.</li>
+  <li><strong>CRUD APIs:</strong> Heavy integration tests (DB, HTTP layer). The failure mode is wiring — the right logic on the wrong endpoint, the right query with the wrong join. Unit tests of individual handlers are low-signal.</li>
+  <li><strong>Distributed systems:</strong> Heavy E2E and <a href="chaos-engineering.html">chaos</a> tests. The failure mode is interaction — service A works, service B works, A calling B during a network partition doesn't. Unit tests of individual services can't catch this.</li>
+  <li><strong>Frontend UIs:</strong> Heavy integration tests (component + state). The failure mode is "it renders wrong," which unit tests of rendering functions catch unreliably.</li>
+</ul>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  Your team writes 200 unit tests and 5 E2E tests. The E2E tests pass. The unit tests all pass too. You deploy. Production breaks immediately — users can't log in. What category of bug do you have, and which layer should have caught it?
+</div>
+
+<p>An <strong>integration failure</strong> — the login endpoint works in isolation (unit tests pass), the database works in isolation, but the code that connects them is broken (wrong connection string, missing migration, the handler calls the wrong query). Your integration-test gap — the missing middle of the pyramid — is where the bug lives. The fix: add a single integration test that starts the app with a real database, sends a real HTTP request to <code>POST /login</code>, and checks the response. One test in the right place catches an entire class of bugs that a thousand unit tests can't.</p>
+
+<div class="lens">
+  <span class="lens-tag">the meta-test</span>
+  The best test suite is the one that fails <em>when there's a bug you care about</em> and passes <em>when there isn't</em>. This is obvious and rarely achieved. Measure your test suite's precision (what fraction of failures are real bugs?) and recall (what fraction of real bugs cause a test failure?). Most teams optimize only for coverage (what fraction of lines are exercised) because coverage is easy to measure. But coverage is an input to confidence, not confidence itself. The test that exercises a line without asserting anything meaningful about its output is coverage theater. A single well-placed integration test with a real assertion beats a hundred unit tests that assert `not null`.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">Stop writing examples; describe invariants —</span> <span class="meta-line">property-based testing</span> is the technique where you specify what must always be true and let the machine attack it with random inputs.</p>
+        <p class="thread"><span class="lead-in">Testing your tests —</span> <span class="meta-line">mutation testing</span> breaks your code on purpose to see if your tests notice. Coverage tells you what ran; mutation tells you what's actually tested.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Testing pyramid sits among property testing, mutation testing, fuzzing, and observability">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">property test</text>
+          </g>
+          <g class="node" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">mutation test</text>
+          </g>
+          <g class="node" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">fuzzing</text>
+          </g>
+          <g class="node learned" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">observability</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">test pyramid</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><span class="meta-line">Property-based testing · frontier</span></li>
+          <li><span class="meta-line">Mutation testing · frontier</span></li>
+          <li><span class="meta-line">Fuzzing · frontier</span></li>
+          <li><a href="observability.html">Logs, metrics & traces</a></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Engineering Practice · testing</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Replication — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Systems &amp; Distributed</span><span class="dot"></span>
+      <span>distribution</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Replication</h1>
+    <p class="standfirst">Keeping copies in sync — the source of both durability and most consistency bugs in distributed systems.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>Data on one machine is a liability. That machine dies, and the data is gone. <span class="term">Replication</span> — keeping copies of data on multiple machines — is the answer. It's also the source of the hardest problems in distributed systems, because now you have multiple copies that must agree, and agreement across a network that can delay, drop, or partition messages is where distributed systems get interesting.</p>
+
+<h2>Leader-follower: one writer, many readers</h2>
+
+<p>The most common replication model: one replica is the <span class="term">leader</span> (primary). All writes go to the leader. The leader sends the changes to the <span class="term">followers</span> (secondaries, replicas). Followers apply the changes in the same order and arrive at the same state. Reads can go to the leader or to any follower, depending on your consistency requirements.</p>
+
+<p>This is the model behind PostgreSQL streaming replication, MySQL group replication, MongoDB replica sets, and Kafka's partition replication. It's simple, well-understood, and gives you:</p>
+
+<ul>
+  <li><strong>Read scalability:</strong> Distribute reads across followers. Write throughput is still limited to one machine (the leader), but most workloads are read-heavy.</li>
+  <li><strong>Failover:</strong> If the leader dies, a follower is promoted to leader. This takes seconds to minutes and typically requires human confirmation (automated failover is possible but risky — a network partition can produce two leaders, which is worse than a brief outage).</li>
+</ul>
+
+<div class="pull">Leader-follower replication gives you one copy of the truth (the leader's write order). The cost is that the leader is a bottleneck and a single point of failure.</div>
+
+<p>The critical implementation choice: <strong>synchronous vs asynchronous replication.</strong> Synchronous: the leader waits for the follower to confirm the write before responding to the client. The follower is always up to date, but writes are as slow as the slowest synchronous follower. Asynchronous: the leader acknowledges the write immediately and sends changes to followers in the background. Writes are fast, but if the leader crashes before the follower receives the change, the write is lost. Most systems use semi-synchronous: one follower is synchronous (for durability), the rest are asynchronous (for read scaling).</p>
+
+<h2>Multi-leader: writes anywhere</h2>
+
+<p>In multi-leader replication, any replica can accept writes. Each leader replicates its writes to the others. This is the model behind CouchDB, DynamoDB (with global tables), and CRDT-based systems. The benefit: writes can go to the nearest datacenter, reducing latency for globally distributed users. The cost: <span class="term">write conflicts</span> — two leaders accept conflicting writes simultaneously, and the system must resolve them.</p>
+
+<p>Conflict resolution strategies:</p>
+<ul>
+  <li><strong>Last write wins (LWW):</strong> Use timestamps; the write with the latest timestamp wins. Simple, deterministic, and wrong for many use cases — if two users edit the same wiki page simultaneously, one's edit is silently discarded.</li>
+  <li><strong>Application-level merge:</strong> The database surfaces the conflict to the application. The application resolves it (e.g., merge the two edits, show the user both versions, or apply business logic). More correct, more complex.</li>
+  <li><strong>CRDTs:</strong> Data structures that merge deterministically without conflicts. A counter implemented as a CRDT converges to the sum of all increments regardless of order. A set CRDT converges to the union of all additions. The magic under collaborative editors like Google Docs.</li>
+</ul>
+
+<h2>Leaderless: everybody can write</h2>
+
+<p>In leaderless replication (Dynamo-style), the client writes to multiple replicas directly and considers the write successful when a quorum acknowledges it. Reads similarly query a quorum of replicas. The <a href="cap-theorem.html">quorum condition</a> R + W > N (where N is the total number of replicas) ensures that at least one replica in every read quorum has seen the latest write. There's no leader election, no failover, and the system degrades gracefully as replicas fail — you just get fewer redundancy.</p>
+
+<p>The cost: <span class="term">read repair</span>. When a read encounters a replica with stale data, it updates it — on the read path, adding latency to reads. And <span class="term">anti-entropy</span> processes that run in the background, comparing replicas and syncing diverged data. Leaderless systems don't have a leader to sequence writes, so they're always slightly healing themselves.</p>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  You're using synchronous replication with one follower. The follower crashes. The leader can't replicate. What are your options, and what's the trade-off in each?
+</div>
+
+<p>Option 1: <strong>block writes</strong> until the follower recovers or you manually remove it from the synchronous set. The system is unavailable for writes — durability (the D in ACID) is preserved at the cost of availability (the A in <a href="cap-theorem.html">CAP</a>). Option 2: <strong>degrade to asynchronous mode</strong> automatically. The leader keeps accepting writes and queues them for the follower. If the leader crashes before the follower recovers, those writes are lost. You've traded durability for availability. Option 3: <strong>promote an asynchronous follower</strong> to synchronous. There's a gap — the window between the old synchronous follower's crash and the new one catching up — where writes aren't replicated. Most production systems default to option 2 (degrade, alarm loudly, let a human decide) because blocking all writes because one replica is down is usually the wrong trade.</p>
+
+<div class="lens">
+  <span class="lens-tag">the replication lag tax</span>
+  Even with synchronous replication, followers are always slightly behind the leader — if only by microseconds. An application that writes to the leader and immediately reads from a follower (a "read-your-writes" consistency requirement) will occasionally see stale data. The fix: route reads that need the user's own writes to the leader, and reads that can tolerate slight staleness (other users' content, analytics) to followers. This is the most common replication pattern in production: write to leader, read from leader for the writing user's session, read from followers for everything else.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The counting trick that guarantees consistency —</span> <span class="meta-line">quorums & the R+W>N rule</span> is the mathematical foundation of leaderless replication and the reason R+W>N works.</p>
+        <p class="thread"><span class="lead-in">Splitting data across machines —</span> <span class="meta-line">sharding & partitioning</span> is replication's companion: replication puts the same data on multiple machines; sharding puts different data on different machines.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Replication sits among quorums, sharding, consensus, and CAP">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">quorums</text>
+          </g>
+          <g class="node" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">sharding</text>
+          </g>
+          <g class="node" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">consensus</text>
+          </g>
+          <g class="node learned" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">CAP</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">replication</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><span class="meta-line">Quorums & R+W>N · frontier</span></li>
+          <li><span class="meta-line">Sharding & partitioning · frontier</span></li>
+          <li><span class="meta-line">Consensus: Raft & Paxos · frontier</span></li>
+          <li><a href="cap-theorem.html">The CAP theorem</a></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Systems &amp; Distributed · distribution</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

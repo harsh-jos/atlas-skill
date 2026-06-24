@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SLIs, SLOs &amp; Error Budgets — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Engineering Practice</span><span class="dot"></span>
+      <span>operations</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">SLIs, SLOs &amp; Error Budgets</h1>
+    <p class="standfirst">Turning "be reliable" into a number you can spend — and the framework that ends the war between product and SRE.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>Somewhere in your organization, an engineer is being asked to make the system "more reliable." The engineer asks "how reliable?" and gets back "very reliable." This is the pre-SRE world — reliability as a vibe, argued about in meetings, traded against features in a negotiation where neither side has numbers.</p>
+
+<p>The SRE framework (from Google's Site Reliability Engineering book, 2016, and now industry standard) replaces the vibe with three concepts that fit on an index card:</p>
+
+<ul>
+  <li><strong>SLI (Service Level Indicator):</strong> a measured number. "The proportion of requests that returned a successful response within 300ms, measured over a rolling 28-day window."</li>
+  <li><strong>SLO (Service Level Objective):</strong> a target for that number. "99.9% of requests succeed within 300ms." This is negotiated between the service owners and the business.</li>
+  <li><strong>Error Budget:</strong> the gap between the SLO and 100%. If your SLO is 99.9%, your error budget is 0.1% of requests — roughly 43 minutes of downtime per month. When the error budget is positive, you can ship features. When it's exhausted, you freeze features and invest in reliability.</li>
+</ul>
+
+<div class="pull">An error budget turns reliability into a resource you can spend, not an absolute you can only fail to meet.</div>
+
+<h2>The error budget is the point</h2>
+
+<p>The SLI and SLO exist to produce the error budget. The error budget exists to resolve the fundamental tension between development velocity and reliability. Before error budgets, the conversation was: "we want to ship faster" vs "we want fewer incidents." Both are reasonable, neither is measurable, and the person with more organizational power wins.</p>
+
+<p>With an error budget, the conversation becomes: "we have 22 minutes of budget remaining this month. This feature has a risk profile that might consume 5 minutes. We can ship it." Or: "we've exhausted our error budget for the quarter. All feature work is paused until we've invested enough in reliability to bring the SLI back within SLO." The decision is data-driven and the framework is agreed upon in advance. No one is the bad guy — the numbers decide.</p>
+
+<h2>What makes a good SLI</h2>
+
+<p>Not everything that can be measured should be an SLI. A good SLI is:</p>
+
+<ul>
+  <li><strong>User-visible.</strong> CPU utilization is not an SLI; it's an internal metric. Users don't care about your CPU; they care about latency and errors. Track what the user experiences. (Internal SLIs for dependencies are fine, but start with user-facing.)</li>
+  <li><strong>High-cardinality enough to matter.</strong> "99.9% of all requests succeed" can mask a problem: the 0.1% of failures might all be in the payment path. Break SLIs down by critical user journeys — checkout, login, search — not just aggregate request counts.</li>
+  <li><strong>Measurable from the client side where possible.</strong> Server-side metrics miss DNS failures, CDN issues, and client network problems. A load balancer reporting 100% success while your users see a blank page is worse than no metric at all.</li>
+</ul>
+
+<p>The standard starting set — the "golden signals" from the SRE book:</p>
+
+<ol>
+  <li><strong>Latency:</strong> How long does it take to serve a request? Distinguish between successful and error responses (a fast 500 is still an error).</li>
+  <li><strong>Traffic:</strong> How much demand is the system under? Requests per second, segmented by type.</li>
+  <li><strong>Errors:</strong> What fraction of requests fail? Explicit failures (500s), implicit failures (200 OK with wrong content), and degraded responses (served from cache when the primary is down).</li>
+  <li><strong>Saturation:</strong> How full is the system? Queue depth, thread pool utilization, connection count. The leading indicator of future latency and errors.</li>
+</ol>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  Your SLO is 99.9% availability. Last month you had 99.95% — well within budget. This month, a deployment at 3am causes a 45-minute outage. It's the 15th of the month. What does the error budget say, and what happens to your next planned feature deploy?
+</div>
+
+<p>At 99.9% SLO, your monthly error budget is about 43 minutes (0.1% × 30 days × 24 × 60). The 45-minute outage consumed the entire monthly budget plus 2 minutes. The error budget is now negative. Per the framework the team agreed to: feature freezes are in effect until the budget recovers — either by the 28-day rolling window expiring the outage, or by enough incident-free time accumulating to bring the window's error rate back under 0.1%. The next feature deploy waits. This isn't punishment — it's the contract. The business agreed that 99.9% was the right number, and the error budget mechanism enforces it without requiring a VP to intervene.</p>
+
+<h2>Choosing the SLO number</h2>
+
+<p>The most common mistake is setting SLOs too high. 99.99% ("four nines") sounds reasonable but permits <em>4 minutes of downtime per month</em>. That's not a target; that's a budget for one incident investigation. The practical rule:</p>
+
+<ul>
+  <li><strong>Don't set an SLO higher than your dependencies can support.</strong> If your cloud provider's SLA is 99.95%, your SLO can't be 99.99% — you'll exhaust your error budget from your dependencies' outages alone, before your own code has a chance to fail.</li>
+  <li><strong>Start loose, tighten later.</strong> Set the initial SLO based on current measured performance. If you're currently at 99.5%, set the SLO at 99.5% and invest in reliability until you're comfortably above it, then tighten to 99.9%. An SLO you're already violating on day one teaches the team that SLOs don't matter.</li>
+  <li><strong>Not every service needs the same SLO.</strong> The payment service might be 99.99%. The recommendation engine might be 99%. The internal dashboard might be 99% with no error budget tracking at all. Reliability is a product decision, not a moral imperative.</li>
+</ul>
+
+<div class="lens">
+  <span class="lens-tag">the trap</span>
+  Error budgets work when the organization trusts the framework. If a VP overrides the freeze because "this feature is too important," the framework loses all credibility and you're back to vibes. The hardest part of implementing SLOs is not the measurement — it's the organizational discipline to honor the error budget when it says no. If your company isn't ready for that, don't adopt SLOs. A framework that's routinely ignored is worse than no framework at all.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The signals that feed your SLIs —</span> <a href="observability.html">logs, metrics & traces</a> are the measurement infrastructure. Without observability, SLIs are guesswork.</p>
+        <p class="thread"><span class="lead-in">Breaking things on purpose —</span> <span class="meta-line">chaos engineering</span> verifies that your SLO holds under real-world failure conditions, not just steady state.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: SLOs sit among observability, chaos engineering, circuit breakers, and feature flags">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">observability</text>
+          </g>
+          <g class="node" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">chaos eng.</text>
+          </g>
+          <g class="node learned" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">circuit breaker</text>
+          </g>
+          <g class="node" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">feature flags</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">SLOs</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="observability.html">Logs, metrics & traces</a></li>
+          <li><span class="meta-line">Chaos engineering · frontier</span></li>
+          <li><a href="circuit-breaker.html">Circuit breakers</a></li>
+          <li><span class="meta-line">Feature flags · frontier</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Engineering Practice · operations</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

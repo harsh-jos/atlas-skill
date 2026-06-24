@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MVCC: How Databases Avoid Locks — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Data &amp; Storage</span><span class="dot"></span>
+      <span>transactions</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">MVCC: How Databases Avoid Locks</h1>
+    <p class="standfirst">Why your read doesn't block someone else's write in Postgres — and the version-chain trick that makes it possible.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>You're reading from a database while someone else is writing to the same row. In a naive system, the writer locks the row, your read waits, and the application slows to a crawl under concurrent load. You could add read locks — now readers block writers — and you've traded one bottleneck for another.</p>
+
+<p><span class="term">Multiversion Concurrency Control</span> (MVCC) solves this by keeping <em>multiple versions</em> of each row simultaneously. A writer creates a new version; readers continue reading the old version until their transaction completes. No locks, no waiting. Readers see a consistent snapshot of the database as it existed at the moment their transaction began, even while writers are actively modifying it.</p>
+
+<div class="pull">MVCC trades storage for concurrency: keep old versions around so readers never have to wait for writers.</div>
+
+<h2>How Postgres does it</h2>
+
+<p>Every row in Postgres carries four hidden system columns:</p>
+
+<ul>
+  <li><strong><code>xmin</code>:</strong> The transaction ID that created this version of the row.</li>
+  <li><strong><code>xmax</code>:</strong> The transaction ID that deleted or updated this version (0 if still live).</li>
+</ul>
+
+<p>An UPDATE doesn't modify the existing row. It sets <code>xmax</code> on the old version (marking it as dead to future transactions) and inserts a new version with a higher <code>xmin</code>. The old version physically remains in the table until <span class="term">VACUUM</span> reclaims it.</p>
+
+<pre class="pre-label">An UPDATE in Postgres, through the MVCC lens
+Before:  [xmin=100 | xmax=0  | id=7 | balance=40]
+UPDATE accounts SET balance = 50 WHERE id = 7;  -- runs in txn 150
+
+After:   [xmin=100 | xmax=150 | id=7 | balance=40]  ← old version, marked dead
+         [xmin=150 | xmax=0   | id=7 | balance=50]  ← new version, current</pre>
+
+<p>A reader running in a transaction that started before transaction 150 will see the old row (<code>xmin=100, xmax=0</code> at the time its snapshot was taken). A reader in a transaction that started after 150 commits will see the new row. Each transaction gets a snapshot of the database that ignores versions created after it began and versions deleted before it began (with some subtlety around in-flight transactions).</p>
+
+<h2>Snapshot isolation: what you actually get</h2>
+
+<p>MVCC provides <span class="term">snapshot isolation</span> — the I in ACID's "I" word, and the source of most confusion about what databases guarantee. Under snapshot isolation:</p>
+
+<ul>
+  <li>You read a consistent snapshot of committed data as of your transaction's start time.</li>
+  <li>Two concurrent transactions can modify different rows without conflict.</li>
+  <li>Two concurrent transactions <em>can</em> modify the same row — the first to commit wins, the second gets a serialization error (in Postgres, at REPEATABLE READ and SERIALIZABLE levels).</li>
+</ul>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  Alice and Bob both read row 7 (balance = 40) at the same time. Alice updates it to 50. Bob updates it to 30. Alice commits first. What happens to Bob's transaction?
+</div>
+
+<p>Bob gets a <span class="term">serialization error</span> (Postgres: "could not serialize access due to concurrent update"). Bob's transaction saw the row at <code>xmax=0</code>, but when he tries to commit, <code>xmax</code> is now 150 (Alice's transaction). Bob's update was based on a version of the row that's no longer the latest. The database refuses to commit, because if it did, Alice's change would be silently overwritten — a <span class="term">lost update</span>. The application is expected to retry Bob's transaction: re-read the row (now showing balance = 50), re-compute the update (perhaps 50 − 10 = 40, if Bob was debiting 10), and re-attempt the commit.</p>
+
+<p>This is the sharp edge of MVCC: you get non-blocking reads, but you pay with the possibility of serialization failures that your application must handle. Most ORMs and frameworks retry automatically (with exponential backoff), but the failures exist whether you see them or not.</p>
+
+<h2>MVCC across the database landscape</h2>
+
+<p>Nearly every modern relational database uses MVCC, but the implementations differ in ways that matter:</p>
+
+<ul>
+  <li><strong>Postgres:</strong> Stores old versions in the table itself (heap). VACUUM cleans up dead rows. The WAL logs changes for recovery. The table can bloat with dead rows under heavy write load — VACUUM is not optional, it's load-bearing infrastructure.</li>
+
+  <li><strong>MySQL/InnoDB:</strong> Stores old versions in a separate <span class="term">undo log</span> (rollback segments). The table itself only holds the latest version. Reads reconstruct old versions by applying undo records. This is cleaner for the table but means even a read might need to chase undo chains if the row has been heavily modified.</li>
+
+  <li><strong>Oracle:</strong> Similar to InnoDB's undo approach — the original commercial MVCC implementation and still one of the most sophisticated.</li>
+
+  <li><strong>SQL Server:</strong> Added MVCC relatively late (Snapshot Isolation in 2005, Read Committed Snapshot as the default in Azure). Uses a version store in tempdb.</li>
+
+  <li><strong>CockroachDB / Spanner:</strong> MVCC with hybrid-logical clocks instead of transaction IDs. Versions are identified by timestamps, not integers, because in a distributed database there's no central transaction ID counter.</li>
+</ul>
+
+<h2>The vacuum problem (and why it's interesting)</h2>
+
+<p>Postgres's MVCC design — old versions live in the table — means dead rows accumulate. Without VACUUM, a heavily-updated table grows unboundedly. VACUUM scans the table, marks dead rows as reusable, and updates the <span class="term">visibility map</span> so that index-only scans can skip heap fetches for pages where all rows are visible to all transactions.</p>
+
+<p>The tricky part: VACUUM can only reclaim a dead row when no active transaction can still see it. If you have a long-running query (a reporting job running for hours), its snapshot keeps old versions alive. VACUUM can't clean them up, the table bloats, and the bloat slows down queries, which makes them run longer, which makes bloat worse. This feedback loop — long-running queries → bloat → slower queries → more bloat — is the signature failure mode of Postgres MVCC. The fix is either shorter transactions, aggressive autovacuum tuning, or periodic maintenance windows.</p>
+
+<div class="lens">
+  <span class="lens-tag">when not MVCC</span>
+  If your workload is append-only (time series, event logs), MVCC's version overhead is pure waste — every row is immutable, so there's only ever one version. An LSM-tree or a log-structured engine fits better. If your workload is single-writer (a queue processing one message at a time), the concurrency MVCC provides is unused but you still pay the VACUUM tax. And if your data is small enough to fit in memory and your concurrency is low, a simpler WAL + in-memory store is both faster and less operationally complex.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The log that makes MVCC durable —</span> <a href="write-ahead-log.html">write-ahead logging</a> ensures that all those version creates and xmax updates survive a crash.</p>
+        <p class="thread"><span class="lead-in">What isolation actually means —</span> <span class="meta-line">transaction isolation levels</span> explains the spectrum from READ UNCOMMITTED to SERIALIZABLE, and which anomalies each prevents.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: MVCC sits among write-ahead logging, isolation levels, B-trees, and locking">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">WAL</text>
+          </g>
+          <g class="node" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">isolation lvls</text>
+          </g>
+          <g class="node learned" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">B-tree</text>
+          </g>
+          <g class="node" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">locks</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">MVCC</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="write-ahead-log.html">Write-ahead logging</a></li>
+          <li><span class="meta-line">Transaction isolation levels · frontier</span></li>
+          <li><a href="b-tree.html">B-trees</a></li>
+          <li><span class="meta-line">Locks, deadlock & livelock · frontier</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Data &amp; Storage · transactions</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

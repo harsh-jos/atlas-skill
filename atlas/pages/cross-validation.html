@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cross-Validation &amp; Data Leakage — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>AI / ML Foundations</span><span class="dot"></span>
+      <span>evaluation</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Cross-Validation &amp; Data Leakage</h1>
+    <p class="standfirst">How to trust a score — and the subtle ways your evaluation lies to you, usually because you accidentally let the test set leak into training.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>You split your data 80/20: train on 80%, test on 20%. Your model scores 94% on the test set. You're happy. You deploy. The model scores 82% on real data. What happened?</p>
+
+<p>Either your test set wasn't representative of production (a sampling problem), or — more likely — information from the test set leaked into training (a <span class="term">data leakage</span> problem). This is the most common and most expensive error in applied ML, and cross-validation exists primarily to catch it.</p>
+
+<h2>Why a single train/test split isn't enough</h2>
+
+<p>A single 80/20 split gives you one estimate of generalization performance. That estimate has variance — a different random split might give you 91% or 96%. If you use that estimate to make decisions (choose a model, tune hyperparameters, decide whether to deploy), you're optimizing against noise. You might pick a model that's genuinely worse but got lucky with the split.</p>
+
+<p><span class="term">k-fold cross-validation</span> reduces this variance by averaging over k different splits. Divide the data into k equal folds. For each fold, train on the other k-1 folds and test on the held-out fold. The average test score across all k folds is your performance estimate, and the standard deviation tells you how stable it is.</p>
+
+<pre class="pre-label">5-fold cross-validation
+Fold 1: Train on [2,3,4,5], Test on [1] → score₁
+Fold 2: Train on [1,3,4,5], Test on [2] → score₂
+Fold 3: Train on [1,2,4,5], Test on [3] → score₃
+Fold 4: Train on [1,2,3,5], Test on [4] → score₄
+Fold 5: Train on [1,2,3,4], Test on [5] → score₅
+
+Report: mean(score₁₋₅) ± std(score₁₋₅)</pre>
+
+<p>k=5 or k=10 is standard. Leave-one-out (k=n) is the extreme — unbiased but high variance and expensive. Stratified k-fold preserves class proportions in each fold, which matters for imbalanced datasets.</p>
+
+<h2>Data leakage: when your model cheats without knowing it</h2>
+
+<div class="pull">Data leakage is any situation where information about the test set influences training. The model looks smarter in evaluation than it is in reality.</div>
+
+<p>Leakage takes specific, recognizable forms:</p>
+
+<ul>
+  <li><strong>Temporal leakage:</strong> Training on future data and testing on past data — or mixing timestamps across the split. If your test set contains dates before your training set, you're testing on the past after training on the future, which is backwards and leads to overconfident estimates. Always split temporally: train on earlier, test on later.</li>
+
+  <li><strong>Preprocessing leakage:</strong> Computing statistics (mean, standard deviation for normalization) on the entire dataset, then splitting. The test data's statistics are baked into the training preprocessing. Fix: compute normalization parameters on the training set only, then apply to the test set.</li>
+
+  <li><strong>Group leakage:</strong> The same patient's X-rays appear in both training and test sets. The model learns to recognize the patient, not the disease. Fix: split by group — all rows for a given patient/entity go to the same fold.</li>
+
+  <li><strong>Target leakage:</strong> A feature contains information about the target that won't be available at prediction time. The classic example: using "number of support tickets filed" to predict churn. A customer who filed 10 tickets last month <em>probably</em> churned, but at prediction time you don't know how many tickets they'll file — that's a post-churn observation. The feature leaks the future.</li>
+</ul>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  You're building a fraud detection model. Your features include "time since last transaction" and "number of chargebacks in the last 7 days." You achieve 97% AUC. Before reading on: which of these features is probably leaking the target, and why?
+</div>
+
+<p>"Number of chargebacks in the last 7 days" is almost certainly leaking. A chargeback is a confirmed fraudulent transaction — it's the label you're trying to predict, summarized as a feature. The model isn't detecting fraud; it's detecting that someone already flagged this as fraud. At prediction time (when a new transaction arrives), you don't know whether it will result in a chargeback — that's what you're trying to predict. The feature makes the model look prescient in evaluation and useless in production. The fix: only use features that are known at the moment of prediction. Historical chargebacks on past transactions are fine; chargebacks on the current transaction are the target.</p>
+
+<h2>Nested cross-validation for honest model selection</h2>
+
+<p>If you use cross-validation to both tune hyperparameters <em>and</em> estimate performance, you've leaked again. The inner loop (hyperparameter tuning) has seen the test fold's scores and biased the choice. The fix: <span class="term">nested cross-validation</span>. Outer loop: estimate generalization performance. Inner loop: tune hyperparameters. The outer test fold never influences hyperparameter selection.</p>
+
+<pre class="pre-label">Nested CV (5-outer × 3-inner)
+Outer fold 1:
+  Inner folds: tune hyperparams on training portion of outer fold 1
+  Outer test: evaluate best model on held-out test fold 1
+Outer fold 2: ... (same, with a different held-out fold)
+...
+
+Final score: mean of outer test scores. This is your honest estimate.</pre>
+
+<div class="lens">
+  <span class="lens-tag">the production gap</span>
+  Cross-validation estimates how well your model generalizes to data from the <em>same distribution</em>. It doesn't estimate how well it generalizes to a different distribution — new users, new time periods, new geographies. Production performance is almost always worse than cross-validation performance because the world changes between training and deployment. Cross-validation is a lower bound on the gap between your model's estimated and true performance. The only real evaluation is production, and the only way to do that safely is with progressive rollouts: shadow mode, then A/B test, then launch.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The error you're evaluating —</span> <a href="bias-variance.html">the bias-variance tradeoff</a> explains <em>why</em> your test error is higher than training error. Cross-validation tells you <em>how much</em> higher and <em>how confident</em> you can be in that number.</p>
+        <p class="thread"><span class="lead-in">Evaluating what can't be cross-validated —</span> <span class="meta-line">evaluating LLM systems</span> covers the qualitatively different challenge of testing models whose output is text, not a number.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Cross-validation sits among bias-variance, regularization, LLM evals, and loss functions">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">bias-var</text>
+          </g>
+          <g class="node" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">regularization</text>
+          </g>
+          <g class="node" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">LLM evals</text>
+          </g>
+          <g class="node learned" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">loss fns</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">cross-val.</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="bias-variance.html">The bias-variance tradeoff</a></li>
+          <li><span class="meta-line">Regularization · frontier</span></li>
+          <li><span class="meta-line">Evaluating LLM systems · frontier</span></li>
+          <li><a href="loss-functions.html">Loss functions</a></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">AI / ML Foundations · evaluation</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Data &amp; Concept Drift — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>ML Systems &amp; MLOps</span><span class="dot"></span>
+      <span>monitoring</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Data &amp; Concept Drift</h1>
+    <p class="standfirst">Your model didn't get worse — the world did, and you didn't notice. The monitoring problem that makes ML systems silently decay.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>You train a fraud detection model on historical transactions. It scores 98% AUC on the test set. You deploy it. For six months, it catches fraud reliably. Then, slowly, the fraud rate rises — not because the model changed, but because fraudsters changed their behavior. The patterns the model learned (small transactions, specific merchant categories, certain geographies) are no longer where fraud lives. The fraudsters adapted. The model didn't.</p>
+
+<p>This is <span class="term">concept drift</span>: the relationship between inputs and the target variable changes over time. It's the fundamental challenge of ML in production, and it's why "deploy and forget" doesn't work for models that interact with an adapting world.</p>
+
+<h2>The two drifts</h2>
+
+<div class="pull">Data drift is when the inputs change. Concept drift is when what the inputs mean changes. Both degrade your model. Only one is easy to detect.</div>
+
+<ul>
+  <li><strong>Data drift (covariate shift):</strong> The distribution of input features changes. Your model was trained on transactions from California; now 40% of traffic comes from Texas. The feature distribution shifted, but the relationship between features and fraud might be the same — a $500 transaction from Texas might still mean the same thing as a $500 transaction from California. Or it might not (that's concept drift). Data drift is detectable without labels — just compare the feature distributions of training and production data.</li>
+
+  <li><strong>Concept drift:</strong> The relationship between features and the target changes. A $500 transaction at 3am used to be highly indicative of fraud. Now, with the rise of late-night online shopping, it's normal. The features are the same; what they <em>mean</em> changed. Concept drift requires labels to detect — you need to know whether the model's predictions were correct, which means waiting for ground truth (the chargeback, the customer complaint, the actual outcome).</li>
+</ul>
+
+<p>Data drift is the canary. Concept drift is the coal mine. You detect data drift with statistical tests (Kolmogorov-Smirnov, Jensen-Shannon divergence, or simpler: compare feature means and variances between training and production distributions). Concept drift requires monitoring prediction accuracy over time, which requires labels — and labels are often delayed (a fraudulent transaction might not be identified as fraud for 30 days).</p>
+
+<h2>What to monitor</h2>
+
+<pre class="pre-label">Drift monitoring dashboard (the minimum)
+1. Feature distribution divergence (training vs production, rolling window)
+   → Alert if JS divergence > threshold for any critical feature
+2. Prediction distribution (are we predicting "fraud" more/less often?)
+   → Alert if prediction mean shifts by >2σ from baseline
+3. Model accuracy on labeled data (when labels arrive, with delay)
+   → Alert if accuracy drops below acceptable threshold
+4. Data quality (missing values, schema changes, outliers)
+   → Alert if % missing values spikes or new categories appear</pre>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  Your model's prediction mean has been stable for 6 months. This week, the fraction of transactions predicted as "fraud" jumps from 0.5% to 3%. Is this data drift, concept drift, or something else — and what's the first thing you check?
+</div>
+
+<p>It could be any of the three, but the first thing to check is <strong>whether the input distribution shifted</strong> (data drift). A sudden influx of transactions from a new merchant category or geography could produce more predictions in the "suspicious" range — the model is working correctly, but its inputs changed. If the input distribution is stable, it could be concept drift (fraud patterns genuinely changed). The third possibility: <strong>the world changed in a way that makes the labels more available</strong> — a fraud ring was busted, producing a spike of confirmed fraud labels, and the model is now seeing patterns it hadn't seen before. The operational response to each is different: data drift might mean retraining on the new distribution; concept drift definitely means retraining (and investigating what changed); a fraud-ring bust means the model is working and the spike is informative, not alarming.</p>
+
+<h2>The retraining decision</h2>
+
+<p>Not every drift requires retraining. The cost of retraining (data pipeline, training compute, evaluation, deployment) must be weighed against the cost of degraded performance. A model that's 0.5% less accurate costs $X in additional fraud losses per month; retraining costs $Y in engineering time and compute. If $X < $Y, don't retrain — monitor and wait. This is an engineering economics decision, not a data science one, and it should be automated: when the monitored drift metric crosses a threshold, trigger a retraining pipeline automatically, evaluate the new model against the baseline, and deploy only if it improves on a held-out recent data slice.</p>
+
+<div class="lens">
+  <span class="lens-tag">the silent killer</span>
+  The most dangerous drift is the one you can't measure: concept drift in a system where labels are never collected. A recommendation model that serves product suggestions is never told which suggestions were good — the user either clicks or doesn't, and non-clicks are ambiguous (was the suggestion bad, or was the user just not in a buying mood?). Without labels, concept drift is invisible. The model degrades, engagement drops, and no alert fires. The only fix is to invest in label collection — explicit feedback (thumbs up/down), implicit feedback with careful interpretation (clicks = positive, but with a correction for position bias), or periodic human evaluation of production predictions. Label collection is the most underinvested part of ML infrastructure, and drift monitoring is the reason it matters.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The observability infrastructure drift monitoring depends on —</span> <a href="observability.html">logs, metrics & traces</a> is how you collect the feature distributions and prediction data that drift detection needs.</p>
+        <p class="thread"><span class="lead-in">The feature consistency layer —</span> <span class="meta-line">feature stores</span> ensure training and serving use the same feature definitions, which prevents a class of drift caused by training/serving skew.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Data drift sits among observability, feature stores, model serving, and cross-validation">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">observability</text>
+          </g>
+          <g class="node" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">feature stores</text>
+          </g>
+          <g class="node learned" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">model serving</text>
+          </g>
+          <g class="node learned" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">cross-val.</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">data drift</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="observability.html">Logs, metrics & traces</a></li>
+          <li><span class="meta-line">Feature stores · frontier</span></li>
+          <li><a href="model-serving.html">Model serving: batch vs online</a></li>
+          <li><a href="cross-validation.html">Cross-validation & data leakage</a></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">ML Systems &amp; MLOps · monitoring</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kafka as a Log, Not a Queue — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>ML Systems &amp; MLOps</span><span class="dot"></span>
+      <span>data</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Kafka as a Log, Not a Queue</h1>
+    <p class="standfirst">The mental flip from "message queue" to "durable, replayable log" that makes Kafka click — and why treating it like RabbitMQ is expensive.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>Kafka is often introduced as "a message queue." This is technically true in the same way that a motorcycle is technically a vehicle with two wheels and a seat. The similarity to a queue is the interface (you produce messages, you consume messages), but the semantics, the performance profile, and the failure modes are entirely different. If you use Kafka the way you use RabbitMQ, you're paying a heavy tax — in complexity and in hardware — for features you're not using.</p>
+
+<p>The flip that makes Kafka make sense: <strong>Kafka is a distributed, durable, replayable log.</strong> It's an append-only data structure that preserves ordering and retains messages even after they've been consumed. Consumers track their own position in the log. The broker doesn't delete a message when it's read — it deletes it when it ages out (or when the log segment compacts).</p>
+
+<h2>Queues delete on read. Logs don't.</h2>
+
+<div class="pull">In a queue, consumption is destructive. In a log, consumption is a pointer move.</div>
+
+<p>In RabbitMQ, when a consumer acknowledges a message, the broker deletes it. The message is gone. If you want another consumer to see it — for audit, for replay, for a new service joining the system — you need to publish it again, to a separate queue, ahead of time.</p>
+
+<p>In Kafka, a message is written to a <span class="term">topic</span> (a named log). The topic is split into <span class="term">partitions</span> (ordered, immutable sequences of messages). Each consumer belongs to a <span class="term">consumer group</span>, and each group maintains its own <span class="term">offset</span> — an integer saying "we've read up to message N in this partition." The broker doesn't care about offsets; consumers commit them back to Kafka periodically. A message is deleted only when it exceeds the topic's retention period (default: 7 days) or the partition's size cap.</p>
+
+<pre class="pre-label">The same topic, two consumer groups, different positions
+Partition 0: [msg0] [msg1] [msg2] [msg3] [msg4] [msg5] [msg6] [msg7]
+                ▲                  ▲                        ▲
+           retention         group "analytics"         group "realtime"
+           boundary           offset = 2               offset = 7
+        (msg0 will be        (still processing          (caught up,
+         deleted soon)        the backlog)              reading new msgs)</pre>
+
+<p>This has profound consequences:</p>
+
+<ul>
+  <li><strong>Replay is free.</strong> Need to backfill a new service with the last month of data? Reset its consumer group offset to the beginning and let it catch up. Try that with RabbitMQ — you can't, because the messages are gone.</li>
+  <li><strong>Multiple consumers are independent.</strong> Five different services can read the same topic at different speeds, for different purposes. One might be doing real-time fraud detection; another might be doing daily batch aggregation. They don't slow each other down.</li>
+  <li><strong>You can recover from bugs.</strong> A consumer with a bad deploy corrupts its state. In Kafka, you rewind its offset to before the bad deploy and replay. The source of truth is the log, not the consumer's state.</li>
+</ul>
+
+<h2>Partitions: the unit of parallelism</h2>
+
+<p>A topic has one or more partitions. Each partition is a single log file on disk, append-only, with monotonically increasing offsets. All messages within a partition are strictly ordered — message 7 was definitely written after message 6. But there is <em>no ordering guarantee across partitions</em>. This is the central trade-off: partitions give you parallelism (multiple consumers can read different partitions concurrently), but they take away global ordering.</p>
+
+<p>When a producer writes a message to a topic, it chooses which partition the message goes to — either by specifying a key (messages with the same key always go to the same partition, preserving per-key ordering) or by round-robin (no ordering guarantees, but even distribution). The rule of thumb: if ordering matters for a group of messages, give them the same key. All events for user 42 go to the same partition and stay ordered; events for user 43 can go to a different partition and be processed in parallel.</p>
+
+<p>In Kafka 4.x (current as of 2026), the architecture has been simplified dramatically. ZooKeeper is gone — removed entirely in 4.0 (March 2025). Metadata is now managed by <span class="term">KRaft</span> (Kafka Raft), a built-in Raft consensus layer where a subset of brokers act as controllers. The result: one fewer distributed system to operate, faster metadata operations (creating 1,000 partitions now takes seconds instead of tens of seconds), and support for millions of partitions per cluster.</p>
+
+<h2>Storage: why Kafka is fast</h2>
+
+<p>Kafka's performance comes from designing for the hardware. It writes messages to disk sequentially — appending to the end of a log file. Sequential disk I/O on modern SSDs is hundreds of megabytes per second, comparable to network speeds. Random I/O (which Kafka avoids almost entirely) is orders of magnitude slower.</p>
+
+<p>Kafka also leans heavily on the OS page cache. Rather than maintaining its own in-memory buffer, Kafka lets the OS cache the active log segments in free RAM. Reads for recent data hit the page cache (memory speed); reads for old data hit disk (but still sequentially). This is why Kafka clusters are typically provisioned with lots of RAM — not for Kafka's own process, but for the OS page cache to keep hot data in memory.</p>
+
+<p>The other performance trick: <span class="term">zero-copy</span> transfer. When a consumer reads messages, Kafka uses the <code>sendfile()</code> system call to transfer data directly from the page cache to the network socket, bypassing user-space memory entirely. The bytes go from disk → kernel buffer → NIC, with no Kafka process involvement in the data path. This is why a single Kafka broker can saturate a 10 GbE link while using modest CPU.</p>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  You have a topic with 50 partitions and 3 consumers in a consumer group. Kafka assigns partitions to consumers. How many partitions does each consumer get? Now a 4th consumer joins the group. What happens, and how long does it take?
+</div>
+
+<p>With 50 partitions and 3 consumers, Kafka distributes them as evenly as possible: 17, 17, 16. When consumer 4 joins, the group <span class="term">rebalances</span>: partitions are reassigned to 13, 13, 12, 12. During the rebalance, those partitions briefly stop being consumed (the "stop-the-world" rebalance pause). In older Kafka (pre-3.x), this meant <em>all</em> partitions paused while the group coordinator reassigned everything — a cooperative rebalance protocol (KIP-848, stable in Kafka 3.8+) changed this so that consumers incrementally hand off partitions, and only the partitions actually moving between consumers experience a pause. In Kafka 4.x, cooperative rebalancing is the default and the pause window is typically sub-second for most workloads.</p>
+
+<h2>When Kafka is the wrong choice</h2>
+
+<div class="lens">
+  <span class="lens-tag">when not to</span>
+  Kafka is a distributed system, and distributed systems are expensive in ways that go beyond hardware. You're now operating a cluster: you need to monitor it, upgrade it, handle partition rebalances, and understand its failure modes. If your workload is low-throughput (hundreds of messages per second, not hundreds of thousands), and you need simple queue semantics (produce → consume → delete), RabbitMQ or even PostgreSQL with <code>SKIP LOCKED</code> will serve you better with far less operational burden.
+
+  Also, Kafka is not a great <em>work queue</em>. Individual message acknowledgement ("I processed message 7, but message 8 failed") requires careful offset management. If you need per-message retries with exponential backoff and a dead-letter queue, you can build it on Kafka — but you're building it, not getting it from the broker. RabbitMQ gives you this out of the box. Kafka gives you a log; what you build on top of it is your responsibility.
+</div>
+
+<h2>Kafka in 2026: the key developments</h2>
+
+<ul>
+  <li><strong>KRaft is mandatory.</strong> As of Kafka 4.0, ZooKeeper is completely removed. New clusters are KRaft-only by definition, and existing ZK clusters must migrate before upgrading past 3.x.</li>
+  <li><strong>Share Groups (KIP-932).</strong> A new consumer group mode where messages are assigned to consumers cooperatively with individual acknowledgement — essentially, proper queue semantics on top of the Kafka log. This lets Kafka compete with RabbitMQ/SQS for workloads that need both queue behavior and log durability.</li>
+  <li><strong>Tiered storage.</strong> Hot data stays on local SSDs; cold data moves to object storage (S3, GCS). Query old topics without provisioning massive local disk.</li>
+  <li><strong>Java 17 required for brokers.</strong> If you're running Kafka brokers, you need a JDK 17+ runtime.</li>
+</ul>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The pattern Kafka enables —</span> <span class="meta-line">event sourcing & CQRS</span> treat the log as the primary source of truth and derive the current state from it.</p>
+        <p class="thread"><span class="lead-in">What "exactly once" actually means —</span> <span class="meta-line">the exactly-once delivery myth</span> explains why Kafka's idempotent producer and transactional API don't quite deliver what the name promises.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Kafka sits among queues, event sourcing, backpressure, and exactly-once semantics">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">queues</text>
+          </g>
+          <g class="node" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">event sourcing</text>
+          </g>
+          <g class="node learned" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">backpressure</text>
+          </g>
+          <g class="node" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">exactly-once</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">Kafka</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="queues.html">Queues as a design tool</a></li>
+          <li><a href="backpressure.html">Backpressure</a></li>
+          <li><span class="meta-line">Event sourcing & CQRS · frontier</span></li>
+          <li><span class="meta-line">Exactly-once delivery · frontier</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">ML Systems &amp; MLOps · data</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

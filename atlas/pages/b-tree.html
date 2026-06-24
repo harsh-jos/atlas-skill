@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>B-Trees — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Data &amp; Storage</span><span class="dot"></span>
+      <span>storage engines</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">B-Trees</h1>
+    <p class="standfirst">The 50-year-old data structure under almost every relational index — and why the disk seek, not the CPU, is its real architect.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>In 1971, a disk seek took about 50 milliseconds. Reading a block from disk was slow enough that you'd rearrange your entire data structure around avoiding it. Rudolf Bayer and Edward McCreight did exactly that. The result was the B-tree, and it still runs every major relational database.</p>
+
+<p>You don't hear about B-trees much because they work so well they're invisible. When you create an index in Postgres, you get a B-tree. When MySQL stores a table with a primary key, it's a B-tree. When MongoDB looks up a document by <code>_id</code>, it walks a B-tree. The data structure that was designed for spinning rust in 1971 turns out to work remarkably well on SSDs in 2026, because the fundamental asymmetry — sequential access is cheap, random access is expensive — is still true.</p>
+
+<h2>Why not a binary search tree?</h2>
+
+<p>If you've learned data structures, your instinct is: use a balanced BST. O(log₂ n) lookups, simple code. The problem isn't the algorithm — it's the hardware.</p>
+
+<p>A balanced BST with 10 million rows has a height of about 24 levels (log₂ 10⁷ ≈ 24). Each level is a pointer dereference to a different node. In memory, those nodes are scattered everywhere — every step is a random memory access. In memory, that's maybe tolerable. On disk, 24 random seeks at 5ms each is 120 milliseconds for a single lookup.</p>
+
+<p>A B-tree with the same 10 million rows and a branching factor of 500 has a height of 3 (log₅₀₀ 10⁷ ≈ 2.8). Three seeks instead of twenty-four. That's the entire trick.</p>
+
+<div class="pull">A B-tree is a balanced search tree with a very high branching factor, designed so that each node fits exactly in one disk block.</div>
+
+<h2>What a B-tree node actually contains</h2>
+
+<p>Each node is an array of sorted keys with pointers sandwiched between them:</p>
+
+<pre>Internal node (branching factor 4):
+      [ptr₀] key₀ [ptr₁] key₁ [ptr₂] key₂ [ptr₃]
+         │            │            │            │
+         ▼            ▼            ▼            ▼
+    subtree with  subtree with  subtree with  subtree with
+    keys &lt; k₀    k₀ &lt; keys &lt; k₁  k₁ &lt; keys &lt; k₂  keys &gt; k₂</pre>
+
+<p>The number of keys per node is governed by a parameter <code>d</code> (the <span class="term">minimum degree</span>). Every node except the root has between <code>d-1</code> and <code>2d-1</code> keys. The root can have as few as 1 key. This guarantee is what keeps the tree balanced: every leaf is at the exact same depth, always.</p>
+
+<p>When you pick <code>d</code> so that each node fills exactly one disk page (typically 4KB to 16KB), you get the maximum branching factor for free. With 16KB pages and 32-byte key+pointer pairs, you get ~500 keys per internal node. The tree stays shallow even for billions of rows.</p>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  You insert a key into a full node (2d-1 keys). The tree can't just add a 2d-th key — that would break the invariant. Before reading on: what's the one operation that fixes this, and where should it happen relative to the eventual insertion point?
+</div>
+
+<h2>Insertion: splitting on the way down</h2>
+
+<p>The answer is <span class="term">node splitting</span>, and the crucial insight is doing it <em>preemptively</em> on the way down.</p>
+
+<p>As you descend the tree looking for the insertion point, whenever you encounter a full node, you split it. The median key moves up to the parent, and the remaining keys are divided into two new siblings. This guarantees that by the time you reach the leaf where the insertion happens, that leaf's parent has room. You never need to propagate a split back upward, because you already made space on the way down.</p>
+
+<pre class="pre-label">Splitting a full node (d=3, node has 5 keys)
+Before:                   After:
+    [10 20 30 40 50]          [10 20]  30  [40 50]
+                                   ↑
+                              moves to parent</pre>
+
+<p>Deletion is the reverse: you ensure a node never drops below <code>d-1</code> keys by borrowing from a sibling or merging on the way down. Again, one pass, no backtracking.</p>
+
+<h2>Why B+ trees won in practice</h2>
+
+<p>The classic B-tree stores keys <em>and</em> data (or data pointers) in every node — internal and leaf. The <span class="term">B+ tree</span>, which every major database uses, stores data <em>only</em> in the leaves. Internal nodes contain just keys and child pointers.</p>
+
+<p>This has three consequences that turn out to matter enormously:</p>
+
+<ol>
+  <li><strong>More keys per internal node.</strong> Without data pointers competing for space, internal nodes hold more keys → higher branching factor → even shallower trees.</li>
+  <li><strong>Range scans are cheap.</strong> All the data is in the leaves, and the leaves are linked together in sorted order. <code>WHERE x BETWEEN 100 AND 200</code> finds the first leaf, then walks the linked list. In a classic B-tree, you'd be bouncing between internal and leaf nodes the whole way.</li>
+  <li><strong>Consistent performance.</strong> Every lookup goes all the way to a leaf. There's no "lucky" hit in an internal node. This makes performance predictable, which matters more for an index than being fast on average but erratic.</li>
+</ol>
+
+<p>The B+ tree leaf layer often contains the actual table rows (in a clustered index) or pointers to them (in a secondary index). In Postgres, secondary indexes store the primary key value in their leaves, and a second B+ tree lookup on the primary key fetches the row — a double B-tree walk that's fast enough because the trees are so shallow.</p>
+
+<h2>B-trees vs LSM-trees: the storage engine divide</h2>
+
+<p>The B-tree's main competitor is the <span class="meta-line">LSM-tree</span>, and the trade-off is a clean one:</p>
+
+<ul>
+  <li><strong>B-trees optimize for reads.</strong> The data is in one place, sorted, with O(log n) random reads. But writes are expensive — you're modifying pages in place, which means random I/O. The <a href="write-ahead-log.html">write-ahead log</a> turns those random writes into a sequential append for durability, but the data file writes are still random.</li>
+
+  <li><strong>LSM-trees optimize for writes.</strong> Writes go to an in-memory buffer and a sequential WAL. Reads might need to check multiple files (memtable + multiple SSTables), which is more I/O than a B-tree read. But the writes are pure sequential — no in-place modification.</li>
+</ul>
+
+<p>The rule of thumb: if your workload is read-heavy (or reads and writes are balanced), use a B-tree. If it's write-heavy (logging, time series, event ingestion), use an LSM-tree. Most OLTP databases pick B-trees; most log-structured storage engines pick LSM.</p>
+
+<div class="lens">
+  <span class="lens-tag">watch out</span>
+  B-trees suffer from <span class="term">write amplification</span> in a subtle way. Updating a single row might dirty an entire page. Checkpointing writes that whole page to disk, even if only one byte changed. SSDs wear out from write cycles, and B-tree page writes are larger and more frequent than you'd expect from the logical write rate. Most databases mitigate this with a background writer that batches dirty-page flushes, but if you're running on write-limited storage, measure this before assuming the B-tree is free.
+</div>
+
+<h2>A structure that outlived its era</h2>
+
+<p>The B-tree was designed for hard drives with moving heads. SSDs eliminated the seek time but preserved the page abstraction — SSDs still read and write in blocks. B-trees map naturally to the block device interface. Even persistent memory (Intel Optane, though discontinued, and its successors) can be addressed byte-by-byte, but the B-tree's real strength isn't about the physical medium. It's about the log-structured property of keeping data sorted under mutations. That's a mathematical need, not a hardware one.</p>
+
+<p>For a structure that's been in production since before C existed, the B-tree has aged remarkably well. It's a reminder that the most durable ideas in computer science aren't the cleverest — they're the ones that understood the constraints correctly and made the right trade, for long enough that the trade became invisible.</p>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The write-optimized counterpoint —</span> <span class="meta-line">LSM-trees</span> turn random writes into sequential ones, at the cost of reads that sometimes check multiple files.</p>
+        <p class="thread"><span class="lead-in">How the writes actually survive —</span> the <a href="write-ahead-log.html">write-ahead log</a> is what makes in-place B-tree modification durable across crashes.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: B-trees sit among LSM-trees, write-ahead logging, MVCC, and hash tables">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="50"  y2="130"/>
+          <line class="edge active" x1="140" y1="92" x2="230" y2="130"/>
+          <line class="edge"        x1="62"  y1="40" x2="50"  y2="130"/>
+
+          <g class="node" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">LSM-tree</text>
+          </g>
+          <g class="node learned" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">WAL</text>
+          </g>
+          <g class="node" transform="translate(50,130)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">MVCC</text>
+          </g>
+          <g class="node" transform="translate(230,130)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">hash tables</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">B-tree</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><span class="meta-line">LSM-tree · frontier</span></li>
+          <li><a href="write-ahead-log.html">Write-ahead logging</a></li>
+          <li><a href="hash-tables.html">Hash tables, really</a></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Data &amp; Storage · storage engines</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

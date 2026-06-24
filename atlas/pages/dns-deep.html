@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DNS Is a Distributed Database — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Networking &amp; Protocols</span><span class="dot"></span>
+      <span>infrastructure</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">DNS Is a Distributed Database</h1>
+    <p class="standfirst">The naming system you forget about until it takes down half the internet — and the most successful distributed database ever built.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>Every time you load a web page, your browser makes a DNS query. That query traverses a hierarchy of servers, any of which might have the answer cached. The system handles billions of queries per second, tolerates misconfigured servers, survives cable cuts and DDoS attacks, and has been running continuously since 1985. If you proposed building a distributed database with DNS's architecture today, you'd be laughed out of the design review. And yet it works, and it teaches you more about distributed systems than most "proper" databases do.</p>
+
+<h2>The DNS tree: a hierarchy, not a flat namespace</h2>
+
+<p>DNS names form a tree. The root is <code>.</code> (dot). Beneath it are the top-level domains (<code>.com</code>, <code>.org</code>, <code>.uk</code>). Beneath those are second-level domains (<code>example.com</code>). And so on. Each level <em>delegates</em> authority to the level below it: the root servers don't know where <code>www.example.com</code> lives; they know which servers are responsible for <code>.com</code>, and those servers know which servers are responsible for <code>example.com</code>.</p>
+
+<div class="pull">DNS is a tree of delegations, and resolution is walking from the root down to the leaves — one level at a time.</div>
+
+<p>This is a <em>hierarchical</em> design, not a flat key-value store. It means you can add a domain without telling any central authority (you tell your TLD's registry, which is one step up the tree). It means a misconfigured <code>.com</code> server doesn't affect <code>.org</code> lookups. And it means the system scales horizontally by adding more levels, not more entries to a single database.</p>
+
+<h2>What actually happens during a lookup</h2>
+
+<p>When you type <code>www.example.com</code> into a browser, a resolver (usually your ISP's recursive resolver, or a public one like 8.8.8.8 or 1.1.1.1) walks the tree on your behalf:</p>
+
+<pre class="pre-label">A DNS resolution, step by step
+Client → Recursive resolver: "what's the A record for www.example.com?"
+
+Resolver → Root server (.):        "who handles .com?"
+Root → Resolver:                    "here are the .com nameservers"
+
+Resolver → .com TLD server:        "who handles example.com?"
+.com → Resolver:                    "ns1.example.com (IP: 93.184.216.34)"
+
+Resolver → ns1.example.com:        "what's the A record for www.example.com?"
+ns1 → Resolver:                     "www.example.com → 93.184.216.34"
+
+Resolver → Client:                  "93.184.216.34"</pre>
+
+<p>Each step is a DNS query — typically a single UDP packet (53 bytes of payload, though EDNS0 extends this). If a UDP response is too large, the resolver retries over TCP. In practice, most responses fit in a single UDP datagram, and the whole resolution takes 20–100ms.</p>
+
+<p>The resolver caches at every level. If someone else just looked up <code>example.com</code>, the <code>.com</code> nameserver's response is already in the resolver's cache, so the walk starts from step 3. The TTL on each record tells the resolver how long to cache it — from seconds (for records about to change) to days (for stable infrastructure).</p>
+
+<h2>The root servers: 13 identities, hundreds of machines</h2>
+
+<p>There are 13 root server <em>identities</em>, named <code>a.root-servers.net</code> through <code>m.root-servers.net</code>. The number 13 is a UDP artifact: a DNS response listing all 13 root servers fits in a 512-byte UDP packet without fragmentation. In reality, each of these 13 identities is served by dozens or hundreds of machines distributed globally, using <span class="term">anycast</span> routing — the same IP address announced from multiple locations, with BGP routing your query to the nearest instance.</p>
+
+<p>Your query to <code>a.root-servers.net</code> doesn't go to one computer in Virginia. It goes to the nearest of ~80 instances, likely within your continent, sometimes within your city. Anycast is what makes the root server system survive DDoS attacks: an attacker can saturate one instance, but the rest of the world routes around it, and the specific instance under attack is only serving users in that region.</p>
+
+<p>This is the physical reality underneath the abstract hierarchy: a distributed, anycast-routed, UDP-based query system that journalists call "the internet's phone book" and engineers call "the distributed database that accidentally works."</p>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  You're the DNS administrator for <code>example.com</code>. You need to change the IP address of <code>www.example.com</code> from 93.184.216.34 to 93.184.216.100. You update the zone file and reload the nameserver. But half your users still reach the old IP two hours later. What did you forget?
+</div>
+
+<p>The TTL. When you published the old record, it had a TTL — say, 3600 seconds (1 hour). Every recursive resolver that looked up <code>www.example.com</code> during the last hour cached that result for the full TTL duration. Changing the authoritative record doesn't invalidate those caches; they'll serve the stale IP until their TTL expires. If you know a change is coming, the standard practice is to <em>lower</em> the TTL in advance (e.g., from 3600 to 300 seconds), wait for the old TTL to expire, make the change, then raise the TTL back. DNS propagation is not magic — it's TTL expiry, and it's entirely under your control.</p>
+
+<h2>Why DNS is a better distributed database than you think</h2>
+
+<p>DNS has properties that most distributed databases only aspire to:</p>
+
+<ul>
+  <li><strong>Read scalability.</strong> Caching is built into the protocol (TTL on every record). The authoritative servers only handle cache misses — the actual query volume is absorbed by resolvers. A popular domain might be cached a million times for every one query that reaches the authoritative server. This is a <em>protocol-level</em> cache, not an afterthought.</li>
+
+  <li><strong>Fault isolation.</strong> The hierarchy means a failure in one subtree doesn't affect others. If <code>.io</code>'s nameservers go down, <code>.com</code> resolutions continue unaffected. There's no global failure mode — only per-zone failures.</li>
+
+  <li><strong>Eventual consistency.</strong> DNS is eventually consistent by design. There's no transaction across the hierarchy, no global ordering, no consensus protocol. You update your zone; resolvers see the change when their cached TTL expires. The "inconsistency window" is explicit and bounded (the TTL), not a bug you discover in production.</li>
+
+  <li><strong>Data sovereignty.</strong> The <code>.uk</code> registry is operated by Nominet, a UK organization, under UK law. The <code>.cn</code> registry is operated by CNNIC, under Chinese law. The hierarchy maps to political boundaries where it matters and abstracts over them where it doesn't. Few distributed databases have a story for jurisdiction that's this clean.</li>
+</ul>
+
+<h2>And why it's also terrible</h2>
+
+<div class="lens">
+  <span class="lens-tag">the costs</span>
+  DNS is unencrypted by default. Every DNS query you make is visible to your ISP, your coffee shop's WiFi operator, and anyone on the network path. DNS over HTTPS (DoH) and DNS over TLS (DoT) encrypt the resolver-to-client leg, but the resolver-to-authoritative leg is still plaintext. DNS responses are not authenticated unless you're using DNSSEC, which adoption remains patchy for (it's cryptographically sound but operationally painful — key rollovers and signed zone maintenance add real operational complexity). And the 13-root-identities architecture, while elegant, is a concentration of control that periodically becomes the subject of geopolitical tension. The protocol is 40 years old, and every extension since has been a backwards-compatible hack. The result is a system that works remarkably well and is remarkably hard to evolve.
+</div>
+
+<h2>The practical bits for an engineer</h2>
+
+<p>The DNS record types you'll actually encounter:</p>
+
+<ul>
+  <li><strong>A / AAAA:</strong> Maps a name to an IPv4 (A) or IPv6 (AAAA) address. The workhorse record.</li>
+  <li><strong>CNAME:</strong> "This name is an alias for that name." <code>www.example.com → example.com</code>. The resolver follows the chain and returns the final IP. CNAMEs can't coexist with other record types at the same name (except DNSSEC records).</li>
+  <li><strong>MX:</strong> Mail exchanger — which server handles email for this domain, with a priority value. Lower priority = tried first.</li>
+  <li><strong>TXT:</strong> Arbitrary text. Used for SPF (email sender verification), DKIM keys, domain ownership verification ("add this random string to your TXT record to prove you control the domain"), and a dozen other things that were bolted onto TXT because it was the extensibility escape hatch.</li>
+  <li><strong>NS:</strong> Delegates a subdomain to a nameserver. This is the record that structures the hierarchy.</li>
+  <li><strong>SOA:</strong> Start of Authority — metadata about the zone: the primary nameserver, the admin's email, and timing parameters (refresh, retry, expire, and the <em>negative TTL</em> — how long to cache "that name doesn't exist").</li>
+</ul>
+
+<p>One detail that bites people: the difference between a <code>CNAME</code> and an <code>A</code> record at the apex. You can't put a CNAME at the root of a zone (<code>example.com</code>) because the SOA and NS records are already there, and a CNAME can't coexist with other records. If you want your bare domain to resolve to the same place as <code>www</code>, you either use an A record (with a fixed IP) or an ALIAS/ANAME record (a non-standard extension that some DNS providers support, which acts like a CNAME but resolves at query time on the authoritative server). This single constraint has spawned thousands of "why isn't my bare domain working" debugging sessions.</p>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The cache invalidation problem, formalized —</span> <span class="meta-line">caching strategies</span> extend DNS's TTL-based model to the general case: when and how do you invalidate a cached value?</p>
+        <p class="thread"><span class="lead-in">How HTTP rides on top of this —</span> <span class="meta-line">HTTP/1.1 → 2 → 3</span> is the application-layer protocol that uses DNS to find the server, then does its own thing.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: DNS sits among caching strategies, HTTP evolution, load balancing, and TLS">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">caching</text>
+          </g>
+          <g class="node" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">HTTP evo.</text>
+          </g>
+          <g class="node" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">load balancing</text>
+          </g>
+          <g class="node learned" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">TLS</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">DNS</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><span class="meta-line">Caching strategies · frontier</span></li>
+          <li><span class="meta-line">HTTP/1.1 → 2 → 3 · frontier</span></li>
+          <li><span class="meta-line">Load balancing strategies · frontier</span></li>
+          <li><a href="tls.html">How TLS actually works</a></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Networking &amp; Protocols · infrastructure</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

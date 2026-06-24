@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TCP, Past the Handshake — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Networking &amp; Protocols</span><span class="dot"></span>
+      <span>transport</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">TCP, Past the Handshake</h1>
+    <p class="standfirst">Congestion control, head-of-line blocking, and why TCP feels slow sometimes — the machinery under every connection you've ever made.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>You know the three-way handshake: SYN, SYN-ACK, ACK. That's the opening ceremony. Everything interesting about TCP happens after the handshake — in the algorithms that decide how fast to send data, when to retransmit, and how to share a bottleneck link fairly with every other connection on the internet.</p>
+
+<p>These algorithms have been evolving since 1988, and they're the reason your Zoom call doesn't freeze every time someone else on your WiFi starts a download. They're also the reason a single lost packet can stall an <a href="http-evolution.html">HTTP/2</a> connection for hundreds of milliseconds. TCP is a 40-year-old protocol that works astonishingly well, and understanding its internals is understanding why the internet feels the way it does.</p>
+
+<h2>Congestion control: the internet's distributed resource allocation</h2>
+
+<div class="pull">TCP doesn't know how much bandwidth is available. It probes, backs off, and probes again — treating packet loss as the signal that the network is full.</div>
+
+<p>The fundamental problem: a sender has no way to know the available capacity of the path between it and the receiver. The network doesn't tell it. Routers don't send "slow down" messages (ECN is the exception that proves the rule). The only signal the sender gets is <em>packet loss</em> — a dropped packet, inferred from a missing acknowledgment. So TCP treats loss as a congestion signal: if packets are being dropped, the network is full, and the sender should slow down.</p>
+
+<p>The algorithm that defined this approach is <span class="term">Reno</span> (1990), and its pattern — a sawtooth of increasing speed followed by sharp cuts on loss — is still the shape of most TCP connections:</p>
+
+<pre class="pre-label">TCP Reno congestion control
+Slow start:        double cwnd every RTT until first loss
+Congestion avoidance: increase cwnd by 1 MSS per RTT (additive increase)
+On loss (triple dup ACK): cwnd = cwnd / 2, enter fast recovery
+On timeout:         cwnd = 1 MSS, enter slow start (much more severe)</pre>
+
+<p>The <span class="term">congestion window</span> (cwnd) is the number of unacknowledged bytes the sender allows in flight. It's the sender's estimate of the network's capacity. Slow start probes exponentially (double every RTT) until it hits a loss, then backs off multiplicatively — hence <strong>additive increase, multiplicative decrease</strong> (AIMD). This is the algorithm that keeps the internet from collapsing under load, and it's running in every TCP stack on every device that connects to it.</p>
+
+<p>Modern variants — CUBIC (Linux default), BBR (Google, used by YouTube and Google Cloud) — improve on Reno in different ways. CUBIC uses a cubic function instead of linear increase, growing faster when far from the last loss point and slower when near it. BBR doesn't use loss as a congestion signal at all — it models the path's bandwidth and RTT explicitly and tries to send at exactly the bottleneck rate. BBR can achieve higher throughput on lossy paths (where Reno would interpret random loss as congestion), but it can also be unfair to Reno flows sharing the same bottleneck.</p>
+
+<h2>Head-of-line blocking: TCP's original sin</h2>
+
+<p>TCP guarantees in-order delivery. If the sender transmits packets 1, 2, 3, 4, 5 and packet 2 is lost, the receiver buffers packets 3, 4, and 5 — but it <em>cannot deliver them to the application</em> until packet 2 is retransmitted and received. The entire byte stream stalls behind the missing packet. This is <span class="term">head-of-line blocking</span>.</p>
+
+<p>For HTTP/1.1 with persistent connections, this means request 2 stalls behind a lost packet from request 1. For HTTP/2 with multiplexing, this means <em>every stream</em> stalls behind the lost packet, because all streams share the same TCP byte stream. HTTP/2 fixed HOL blocking at the application layer but inherited it from the transport layer. HTTP/3's decision to move to QUIC (per-stream loss recovery over UDP) is a direct response to this — the only way to truly fix HOL blocking is to replace the transport.</p>
+
+<h2>Why TCP can't just be replaced</h2>
+
+<p>TCP is implemented in the OS kernel. QUIC runs in userspace. This means QUIC can evolve faster (userspace code ships weekly; kernel code ships with OS releases), but it also means QUIC pays a CPU penalty for context switches between kernel and userspace. TCP has decades of hardware offload — NICs that compute checksums, segment data, and manage retransmissions in silicon. QUIC is catching up (GSO/GRO for UDP, kernel bypass with DPDK), but as of 2026, TCP still has a slight edge in raw throughput on clean paths.</p>
+
+<p>The other reason: <span class="term">TCP incast</span> — the problem where many senders converge on one receiver (think: a distributed storage system where 100 servers respond to one query simultaneously). The receiver's switch buffer overflows, packets drop, and all 100 senders back off simultaneously, creating a throughput collapse. TCP's congestion control wasn't designed for this pattern; data center TCP variants (DCTCP) use ECN to signal congestion before loss occurs, giving senders a gentler signal. QUIC inherits the same problem and the same solutions (ECN support in QUIC).</p>
+
+<div class="lens">
+  <span class="lens-tag">the pragmatic take</span>
+  For most application developers, TCP's internals are invisible — and should be. The socket API hides them. But when your mobile app feels slow on a train, or your video call degrades on hotel WiFi, you're feeling TCP's congestion control responding to packet loss. The fix isn't tuning TCP parameters (don't — the defaults are smarter than you are for general workloads). The fix is understanding that TCP interprets loss as congestion, and loss is high on wireless networks, so your users on mobile are getting throttled by an algorithm that's mistaking radio interference for a full pipe. HTTP/3 directly addresses this, and it's the strongest argument for migrating.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The protocol that left TCP behind —</span> <a href="http-evolution.html">HTTP/1.1 → 2 → 3</a> explains why HTTP/3 replaced TCP with QUIC and what head-of-line blocking means at the application layer.</p>
+        <p class="thread"><span class="lead-in">The load balancing layer —</span> <span class="meta-line">load balancing strategies</span> operates at the TCP connection level, routing connections to backends before the HTTP bytes arrive.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: TCP sits among HTTP evolution, TLS, load balancing, and DNS">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">HTTP evo.</text>
+          </g>
+          <g class="node learned" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">TLS</text>
+          </g>
+          <g class="node" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">load bal.</text>
+          </g>
+          <g class="node learned" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">DNS</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">TCP</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="http-evolution.html">HTTP/1.1 → 2 → 3</a></li>
+          <li><a href="tls.html">How TLS actually works</a></li>
+          <li><span class="meta-line">Load balancing · frontier</span></li>
+          <li><a href="dns-deep.html">DNS is a distributed database</a></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Networking &amp; Protocols · transport</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

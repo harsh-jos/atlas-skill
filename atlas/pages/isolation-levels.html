@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Transaction Isolation Levels — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Data &amp; Storage</span><span class="dot"></span>
+      <span>transactions</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Transaction Isolation Levels</h1>
+    <p class="standfirst">The spectrum from "fast and slightly wrong" to "correct and slow" — and the specific phenomena each level prevents.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>A transaction is supposed to be atomic, consistent, isolated, and durable. Three of those are well-defined. The fourth — isolation — is a spectrum, and the choice of isolation level is the most consequential performance-correctness trade-off in database design. The SQL standard defines four levels. Every database implements them differently. And the standard's definitions are ambiguous enough that two databases at the same nominal level can provide different guarantees.</p>
+
+<h2>The phenomena</h2>
+
+<p>Isolation levels are defined by which <em>anomalies</em> they prevent. The anomalies are what go wrong when transactions interleave without isolation:</p>
+
+<ul>
+  <li><strong>Dirty read:</strong> Transaction A reads uncommitted data written by transaction B. B rolls back. A has read data that never existed. This is the worst anomaly — A made a decision based on fiction.</li>
+
+  <li><strong>Non-repeatable read (fuzzy read):</strong> Transaction A reads the same row twice. Between the reads, transaction B updates the row and commits. A sees two different values for the same row within the same transaction. The row changed under A.</li>
+
+  <li><strong>Phantom read:</strong> Transaction A runs the same query twice (e.g., <code>SELECT * FROM orders WHERE status = 'pending'</code>). Between the queries, transaction B inserts a new pending order and commits. A's second query returns a row that wasn't in the first — a "phantom." The <em>set</em> of rows changed, not just an individual row.</li>
+
+  <li><strong>Lost update:</strong> A and B both read the same row, both modify it, both commit. The second commit silently overwrites the first. One transaction's work is lost without either transaction seeing the other's changes. (Not in the SQL standard's list but the most common real-world anomaly.)</li>
+
+  <li><strong>Write skew:</strong> A and B read two different rows (e.g., two doctors checking on-call coverage), both see a condition met ("at least one doctor is on call"), both update their respective rows (each goes off call), and now zero doctors are on call. The invariant ("at least one doctor on call") is violated even though neither transaction modified the same row. This is the subtle anomaly that only SERIALIZABLE prevents.</li>
+</ul>
+
+<div class="pull">Dirty reads are reading uncommitted data. Non-repeatable reads are individual rows changing. Phantoms are result sets changing. Write skew is invariants breaking across rows.</div>
+
+<h2>The four levels</h2>
+
+<table>
+  <tr><th>Level</th><th>Dirty Read</th><th>Non-repeatable</th><th>Phantom</th><th>Write Skew</th></tr>
+  <tr><td>READ UNCOMMITTED</td><td>Yes</td><td>Yes</td><td>Yes</td><td>Yes</td></tr>
+  <tr><td>READ COMMITTED</td><td>No</td><td>Yes</td><td>Yes</td><td>Yes</td></tr>
+  <tr><td>REPEATABLE READ</td><td>No</td><td>No</td><td>Yes*</td><td>Yes</td></tr>
+  <tr><td>SERIALIZABLE</td><td>No</td><td>No</td><td>No</td><td>No</td></tr>
+</table>
+
+<p>*Postgres's REPEATABLE READ actually prevents phantom reads (using snapshot isolation). The SQL standard says it shouldn't. This is one of the standard's ambiguities.</p>
+
+<p><strong>READ COMMITTED</strong> is the default in Postgres, MySQL/InnoDB, SQL Server, and Oracle. It prevents dirty reads: you only see committed data. It does <em>not</em> prevent non-repeatable reads or lost updates. Most applications run at this level and handle the remaining anomalies in application code (SELECT FOR UPDATE for lost updates, optimistic locking with version columns).</p>
+
+<p><strong>REPEATABLE READ</strong> is the default in MySQL/InnoDB (and it prevents more than the standard requires — InnoDB's REPEATABLE READ uses gap locks to prevent phantom reads, making it close to SERIALIZABLE in practice). Postgres's REPEATABLE READ uses <a href="mvcc.html">snapshot isolation</a>: reads see a snapshot of the database as of the transaction's start time. No locks, but serialization failures (two concurrent updates to the same row) are detected and one transaction is aborted.</p>
+
+<p><strong>SERIALIZABLE</strong> is the strongest guarantee: transactions execute as if they were run one at a time (serially), even though they actually run concurrently. Postgres implements this with <span class="term">Serializable Snapshot Isolation</span> (SSI), which detects and aborts transactions that would create a serialization anomaly, without locking. Other databases use strict two-phase locking (S2PL) — locks that can cause deadlocks and contention.</p>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  Two transactions concurrently transfer $10 between accounts at READ COMMITTED. Both read the source account balance (both see $100). Both compute the new balance ($90). Both write $90. What's the final balance, and what isolation level would have prevented this?
+</div>
+
+<p>The final balance is $90 — one transfer is lost. This is a lost update: both transactions read the old value, computed a new value, and wrote, with the second write overwriting the first. REPEATABLE READ in Postgres would detect this (serialization failure — "could not serialize access due to concurrent update") and abort one transaction. The application retries the aborted transaction, re-reads the now-updated balance, and computes correctly. Alternatively, at READ COMMITTED, using <code>SELECT ... FOR UPDATE</code> on the source account row locks it, preventing the second transaction from reading it until the first commits — a pessimistic lock that turns the concurrent transactions into sequential ones for the critical rows.</p>
+
+<div class="lens">
+  <span class="lens-tag">the practical rule</span>
+  Start at READ COMMITTED with explicit locking (SELECT FOR UPDATE, optimistic version columns) for the operations that need stronger guarantees. Upgrade to REPEATABLE READ if you're seeing lost updates that application-level locking can't catch (rare, but possible in high-concurrency update workloads). Use SERIALIZABLE only when you have invariants spanning multiple rows that are genuinely hard to enforce with locks — and measure the abort rate, because SERIALIZABLE means your transactions can fail at commit time and must be retried. For most applications, READ COMMITTED + application-level optimistic locking is the sweet spot.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The mechanism under snapshot isolation —</span> <a href="mvcc.html">MVCC</a> is how Postgres implements REPEATABLE READ and SERIALIZABLE without locking. Read them together for the full picture.</p>
+        <p class="thread"><span class="lead-in">The durability half of transactions —</span> <a href="write-ahead-log.html">write-ahead logging</a> is what makes the D in ACID. Isolation is the I — what happens between transactions. WAL is what happens when the power goes out.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Isolation levels sit among MVCC, WAL, locks, and B-trees">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">MVCC</text>
+          </g>
+          <g class="node learned" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">WAL</text>
+          </g>
+          <g class="node learned" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">locks</text>
+          </g>
+          <g class="node learned" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">B-tree</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">isolation</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="mvcc.html">MVCC</a></li>
+          <li><a href="write-ahead-log.html">Write-ahead logging</a></li>
+          <li><a href="locks.html">Locks, deadlock & livelock</a></li>
+          <li><a href="b-tree.html">B-trees</a></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Data &amp; Storage · transactions</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

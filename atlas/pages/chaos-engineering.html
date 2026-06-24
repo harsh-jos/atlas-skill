@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chaos Engineering — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Engineering Practice</span><span class="dot"></span>
+      <span>operations</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Chaos Engineering</h1>
+    <p class="standfirst">Breaking production on purpose, before it breaks itself at 3am — the practice of injecting failure to prove your system survives it.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>In 2011, Netflix launched Chaos Monkey — a tool that randomly terminated production instances during business hours. The reaction from the rest of the industry was roughly: "you're doing <em>what</em> in production?" The reaction from Netflix's reliability metrics was an upward trend. Chaos Monkey forced every service to handle instance failure gracefully, because instance failure was no longer a rare disaster — it was Tuesday.</p>
+
+<p><span class="term">Chaos engineering</span> is the discipline of designing and running experiments to test a system's ability to withstand turbulent conditions. It's not random destruction — it's hypothesis-driven experimentation. You form a hypothesis ("if the payment service becomes slow, the order service degrades gracefully by showing a queue position"), you design an experiment that tests it (inject 2s of latency into the payment service for 5 minutes), and you measure the outcome against your <a href="slo.html">SLOs</a>. If the system handles it, you've increased confidence. If it doesn't, you've found a vulnerability before an attacker or a bad deploy finds it for you.</p>
+
+<h2>The experiment loop</h2>
+
+<pre class="pre-label">A chaos experiment, step by step
+1. Define steady state:  "p99 latency < 200ms, error rate < 0.1%"
+2. Form hypothesis:      "killing one Kafka broker won't breach the steady state"
+3. Design experiment:    terminate broker-3, observe for 10 minutes
+4. Define blast radius:  production, but only the orders topic (not payments)
+5. Run experiment:       execute during business hours with engineers watching
+6. Observe:              did the steady state hold? where did it deviate?
+7. Learn & fix:          if it broke, fix it before the real outage happens
+8. Automate:             add this experiment to the CI/CD pipeline</pre>
+
+<p>The progression is important: start in staging, graduate to production, automate. No one's first chaos experiment should be "terminate the primary database in prod during Black Friday." The Netflix chaos engineering team's philosophy: <strong>start with the smallest possible experiment that teaches you something, and expand the blast radius as your confidence grows.</strong></p>
+
+<h2>What you actually break</h2>
+
+<p>Chaos experiments fall into categories, and the progression through them is a maturity model:</p>
+
+<ul>
+  <li><strong>Infrastructure faults:</strong> Kill a pod. Terminate an EC2 instance. Fill a disk. These are the easiest to run and the easiest to recover from — your infrastructure should handle individual node failures already.</li>
+
+  <li><strong>Network faults:</strong> Inject latency (100ms, 500ms, 2s). Drop packets (1%, 10%, 50%). Partition the network (split a cluster into two halves that can't see each other — the hardest network test). Network faults are where most systems break, because timeouts and retries interact in non-obvious ways.</li>
+
+  <li><strong>Application faults:</strong> Return 500s from a dependency for 30 seconds. Make a service respond slowly (not down — just slow, which is harder to detect and handle). Exhaust a connection pool. These test the application's resilience logic, not just the infrastructure's.</li>
+
+  <li><strong>State faults:</strong> Corrupt a write. Run a long transaction that holds locks. Trigger a schema change while traffic is flowing. The hardest class of experiments — these test the <em>correctness</em> of your system under stress, not just its availability.</li>
+</ul>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  You inject 2 seconds of latency into the payment service. The order service retries 3 times with a 500ms timeout. What happens to the order service's latency distribution, and what's the failure mode you just exposed?
+</div>
+
+<p>The order service now takes at least 6 seconds to fail (3 retries × 500ms each × 2s of injected latency — actually, the retries also hit the slow payment service, so each retry consumes ~2.5s, totaling 7.5s). If the order service itself has an upstream timeout (say, the API gateway times out at 5s), the gateway returns a 504 before the order service finishes failing — and the order service is still burning threads on retries for another 2.5s after the user has already seen an error. This is <span class="term">retry amplification</span>: retries that don't account for the downstream's actual latency multiply the problem, filling thread pools and cascading into other services. The fix: retries with a budget (max total time across all retries), circuit breakers (stop retrying if the downstream is clearly degraded), and sensible timeout alignment (the upstream timeout should be longer than the downstream's worst-case retry budget).</p>
+
+<h2>The tooling landscape</h2>
+
+<p>In 2026, chaos engineering is well-tooled:</p>
+
+<ul>
+  <li><strong>Chaos Mesh</strong> (CNCF Graduated, OSS): The most capable open-source option for Kubernetes. Native CRDs for every fault type — PodChaos, NetworkChaos, IOChaos, StressChaos, TimeChaos (skew system clocks), KernelChaos. GitOps-friendly: experiments are version-controlled YAML.</li>
+  <li><strong>LitmusChaos</strong> (CNCF Incubating, OSS): Strong GitOps integration, large experiment library (ChaosHub). Best for teams already deep in Kubernetes who want pre-built experiments.</li>
+  <li><strong>AWS Fault Injection Simulator / Azure Chaos Studio:</strong> Managed services from cloud providers. Less flexible, but tightly integrated with IAM and cloud-specific primitives.</li>
+  <li><strong>Gremlin</strong> (Commercial SaaS): Enterprise focus — safety guardrails, audit trails, compliance. Runs on any infrastructure, not just Kubernetes.</li>
+</ul>
+
+<div class="lens">
+  <span class="lens-tag">the real prerequisite</span>
+  Chaos engineering isn't a tool — it's an <a href="observability.html">observability</a> practice. If you can't measure your system's steady state (latency percentiles, error rates, throughput by service), you can't run a meaningful chaos experiment. You'll break something, see that something bad happened, and have no idea what to fix. Chaos engineering without observability is just vandalism. The first step is always: instrument your system well enough that you can detect a degradation before your users do. The chaos experiments verify that the instrumentation is right and the degradation is handled gracefully.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The measurement layer —</span> <a href="observability.html">logs, metrics & traces</a> is the prerequisite. You can't run a chaos experiment without knowing what "normal" looks like.</p>
+        <p class="thread"><span class="lead-in">The circuit that should trip —</span> <a href="circuit-breaker.html">circuit breakers</a> are the pattern your services need to handle the failures chaos injects. Read them together.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Chaos engineering sits among observability, circuit breakers, SLOs, and feature flags">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">observability</text>
+          </g>
+          <g class="node learned" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">circuit breaker</text>
+          </g>
+          <g class="node learned" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">SLOs</text>
+          </g>
+          <g class="node" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">feature flags</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">chaos eng.</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="observability.html">Logs, metrics & traces</a></li>
+          <li><a href="circuit-breaker.html">Circuit breakers</a></li>
+          <li><a href="slo.html">SLIs, SLOs & error budgets</a></li>
+          <li><span class="meta-line">Feature flags · frontier</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Engineering Practice · operations</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dependency Injection — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Design &amp; Architecture</span><span class="dot"></span>
+      <span>patterns</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Dependency Injection</h1>
+    <p class="standfirst">A fancy name for a simple idea that makes code testable — and the three ways to do it, from manual wiring to full frameworks.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>Consider a class that sends emails. It needs an SMTP server. The naive approach:</p>
+
+<pre>class WelcomeEmail {
+    private val smtpClient = SmtpClient("smtp.example.com", 587)
+    fun send(user: User) { smtpClient.send(/* ... */) }
+}</pre>
+
+<p>This class has two problems: you can't test it without a real SMTP server, and you can't change the SMTP configuration without editing the class. The fix is so simple it barely deserves a name: <strong>pass the dependency in from outside instead of creating it inside.</strong></p>
+
+<pre>class WelcomeEmail(private val mailer: Mailer) {
+    fun send(user: User) { mailer.send(/* ... */) }
+}
+
+// Production:
+val realEmail = WelcomeEmail(SmtpMailer("smtp.example.com", 587))
+// Test:
+val testEmail = WelcomeEmail(FakeMailer())</pre>
+
+<p>That's <span class="term">dependency injection</span>. The class declares what it needs (a <code>Mailer</code>) and receives it from the outside. It doesn't know or care whether the <code>Mailer</code> is real or fake, SMTP or SendGrid. This is the <a href="solid.html">D in SOLID</a> made mechanical: the class depends on an abstraction (<code>Mailer</code>), not a concretion (<code>SmtpClient</code>).</p>
+
+<div class="pull">Dependency injection is just passing arguments. The rest is tooling around the fact that passing 50 arguments through 20 layers of a large application is tedious.</div>
+
+<h2>The three styles</h2>
+
+<p><strong>1. Constructor injection:</strong> Pass dependencies through the constructor. The class can't be instantiated without them — the compiler enforces the contract. This is the default. Use it unless you have a reason not to.</p>
+
+<p><strong>2. Setter injection:</strong> Create the object, then set dependencies via setters or properties. Useful when the dependency is optional or changes over the object's lifetime. The risk: the object can exist in an invalid state (missing a required dependency) between construction and setter calls.</p>
+
+<p><strong>3. Interface injection:</strong> The dependency provides an injector method; the class implements an interface the injector calls. Rare. Used when the injection framework doesn't have access to the class's constructor (e.g., some Android patterns).</p>
+
+<h2>The container: when wiring gets complex</h2>
+
+<p>In a real application with hundreds of classes, each with multiple dependencies, manual wiring becomes tedious and error-prone:</p>
+
+<pre>val db = PostgresDatabase(config.dbUrl)
+val userRepo = PostgresUserRepo(db)
+val emailService = SmtpMailer(config.smtpHost, config.smtpPort)
+val notificationService = NotificationService(emailService, userRepo)
+val orderService = OrderService(userRepo, notificationService, /* 5 more deps */)
+// ... 100 more lines like this</pre>
+
+<p>A <span class="term">DI container</span> (or injector) automates this. You register types with the container, and it resolves dependency graphs automatically:</p>
+
+<pre>// Registration (happens once at startup)
+container.register&lt;Database&gt;(PostgresDatabase::class)
+container.register&lt;UserRepo&gt;(PostgresUserRepo::class)
+container.register&lt;Mailer&gt;(SmtpMailer::class)
+
+// Resolution (the container figures out what depends on what)
+val orderService = container.resolve&lt;OrderService&gt;()</pre>
+
+<p>The container discovers that <code>OrderService</code> needs a <code>UserRepo</code> and a <code>Mailer</code>, which need a <code>Database</code> and SMTP config, and constructs the whole tree. This is powerful and dangerous: a misconfiguration that would be a compile error in manual wiring becomes a runtime error ("no binding for type PaymentGateway") that surfaces when the container resolves. The container also obscures the dependency graph — you can't see what depends on what by reading the code; you need the container's configuration or runtime diagnostics.</p>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  Your DI container creates every service as a singleton by default. A new developer adds a class that holds mutable per-request state (a request context) and registers it as a singleton. What happens under concurrent load?
+</div>
+
+<p>All requests share the same instance. Request A's data leaks to request B. If the class is registered as a singleton but should be per-request, the container creates one instance and reuses it for every request — a concurrency bug caused by lifecycle misconfiguration. The fix: register the class with a <span class="term">scoped</span> lifetime (one instance per HTTP request) instead of singleton. This is the most common DI container bug: singleton-by-default for stateful objects. The rule: if a class holds state specific to a single user or request, it must be scoped, not singleton. If your container defaults to singleton, every registration of a scoped object requires explicit scope configuration — and eventually someone forgets.</p>
+
+<div class="lens">
+  <span class="lens-tag">the honest take</span>
+  DI containers solve a real problem (wiring large object graphs) and create a new one (opaque dependency graphs, runtime failures, and lifecycle bugs). For a service with 20 classes, manual wiring is less code and clearer than a container. For a service with 200 classes spread across 15 modules, a container earns its keep. The framework-specific containers (Spring for Java/Kotlin, <code>inject</code> for Python FastAPI, Angular's injector for TypeScript) are so deeply integrated with the ecosystem that avoiding them is more work than using them. The pragmatic rule: use constructor injection everywhere. Use a container when manual wiring becomes the bottleneck. Never use setter injection for required dependencies. And always prefer compile-time DI (Dagger for Java/Kotlin, MacWire for Scala) over runtime DI when you have the option — a misconfiguration that's a compile error is infinitely better than one that's a production incident.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The principle behind the pattern —</span> <a href="solid.html">SOLID, honestly</a> covers dependency inversion (the D), which is why DI exists: high-level modules define interfaces; low-level modules implement them.</p>
+        <p class="thread"><span class="lead-in">The architecture pattern DI enables —</span> <a href="hexagonal.html">hexagonal / ports & adapters</a> uses DI to wire adapters into ports at the system boundary.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Dependency injection sits among SOLID, hexagonal, coupling, and testing pyramid">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">SOLID</text>
+          </g>
+          <g class="node learned" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">hexagonal</text>
+          </g>
+          <g class="node learned" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">coupling</text>
+          </g>
+          <g class="node" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">test pyramid</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">DI</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="solid.html">SOLID, honestly</a></li>
+          <li><a href="hexagonal.html">Hexagonal / ports & adapters</a></li>
+          <li><a href="coupling-cohesion.html">Coupling & cohesion</a></li>
+          <li><span class="meta-line">Testing pyramid · frontier</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Design &amp; Architecture · patterns</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

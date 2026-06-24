@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rate Limiting — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Systems &amp; Distributed</span><span class="dot"></span>
+      <span>flow control</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Rate Limiting: Token &amp; Leaky Bucket</h1>
+    <p class="standfirst">The two little algorithms behind every "429 Too Many Requests" — and why the difference between them is the difference between smooth and bursty.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>You expose an API. A client starts hammering it — 1,000 requests per second, accidentally (bug) or deliberately (scraper). Your database can handle 200 queries per second. Without rate limiting, the client saturates the database, and every other user experiences degraded service. One misbehaving client shouldn't be able to hurt everyone else.</p>
+
+<p>Rate limiting is the answer: cap the number of requests a client can make in a given time window. But the implementation matters — a simple counter-based limiter ("100 requests per minute") has sharp edges that the token bucket and leaky bucket algorithms smooth over.</p>
+
+<h2>Token bucket: allow bursts, cap the average</h2>
+
+<div class="pull">A token bucket fills at a constant rate. Each request consumes a token. If tokens are available, the request proceeds. If the bucket is empty, the request is rejected. The bucket's capacity allows bursts.</div>
+
+<pre class="pre-label">Token bucket, conceptually
+Bucket capacity: 100 tokens
+Refill rate: 10 tokens/second (one every 100ms)
+
+Steady state: a client sending 10 req/s never exhausts the bucket
+Burst: a client can send 100 requests instantly (full bucket), then
+       is limited to 10 req/s until the bucket refills</pre>
+
+<p>Parameters: <strong>rate</strong> (tokens per second) and <strong>burst</strong> (bucket capacity). The burst allows short spikes — a client that's been idle accumulates tokens and can burst when it resumes. This is the natural behavior for user-facing APIs: a human browsing a website generates bursty traffic (click → rapid page loads → long pause). A token bucket accommodates this gracefully.</p>
+
+<p>The token bucket is the most common rate limiting algorithm in API gateways. It's what nginx's <code>limit_req</code> implements (with the <code>burst</code> parameter), what AWS API Gateway uses, and what most SaaS rate limiters default to. The Redis implementation stores the bucket state (token count + last refill timestamp) per client key, with atomic Lua scripts to decrement tokens.</p>
+
+<h2>Leaky bucket: smooth the flow</h2>
+
+<p>A leaky bucket is a queue with a constant drain rate. Requests enter the bucket; if the bucket is full, they're rejected. The bucket leaks at a constant rate — one request is processed every N milliseconds. The output is a smooth, constant stream regardless of how bursty the input is.</p>
+
+<p>The difference from a token bucket: a token bucket allows bursts (if tokens are available). A leaky bucket <em>never</em> allows bursts — the output rate is constant. A token bucket shapes by rate-limiting the input; a leaky bucket shapes by smoothing the output.</p>
+
+<pre class="pre-label">Leaky bucket vs token bucket
+Token bucket: allows 100 req/s average, with bursts up to bucket capacity
+             → Good for user-facing APIs (bursty is natural)
+
+Leaky bucket: processes exactly 10 req/s, always, regardless of input pattern
+             → Good for network traffic shaping (constant rate prevents
+               downstream buffer overflows)</pre>
+
+<p>The leaky bucket is the algorithm behind traffic shaping in networking (the "leaky bucket" in ATM networks, QoS policing). It's less common in API rate limiting because most APIs want to allow bursts — a user clicking through pages shouldn't be rate-limited just because they clicked quickly.</p>
+
+<h2>Fixed window counter: the simplest algorithm (and its trap)</h2>
+
+<p>The simplest rate limiter: a counter that resets every window (minute, hour). "100 requests per minute." Reset on the minute boundary.</p>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  A fixed-window limiter allows 100 requests per minute, resetting at :00 seconds. A client sends 100 requests at 12:00:59 (the last second of minute 1) and 100 requests at 12:01:00 (the first second of minute 2). In 2 seconds, the client sent 200 requests. Does the limiter stop this? What's the effective rate over those 2 seconds?
+</div>
+
+<p>The limiter does not stop it — 100 is within the minute-1 limit, and 100 is within the minute-2 limit. The effective rate over 2 seconds is 100 req/s, double the configured 100 per minute averaged over the minute but 60× the intended instantaneous rate. This is the <span class="term">edge-of-window burst</span> problem. The fix: <strong>sliding window</strong> — instead of resetting at boundary, count requests in the last N seconds. Or use a token bucket, which naturally smooths the edge-of-window burst by limiting the refill rate. The sliding window is more expensive (needs per-request timestamps, not just a counter), which is why fixed windows persist — they're cheap and good enough for most use cases where precise rate limiting isn't critical.</p>
+
+<div class="lens">
+  <span class="lens-tag">the distributed problem</span>
+  Rate limiting a single server is straightforward. Rate limiting across a cluster of 100 servers, where each server sees a fraction of traffic, is a distributed counting problem. The naive approach — each server maintains its own bucket — fails because a client's total rate is the sum across servers, and no single server sees the whole picture. The fix: a centralized rate limiter (Redis, with per-key buckets), or a distributed agreement protocol (each server broadcasts its local counts, consensus on the total). The centralized approach is simpler and more common; the distributed approach avoids the Redis dependency but adds complexity. Rate limiting, like <a href="idempotency.html">idempotency</a>, is a distributed systems problem in API-gateway clothing.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The other half of flow control —</span> <a href="backpressure.html">backpressure</a> is what happens when the server pushes back on the client instead of rejecting it. Rate limiting says "no." Backpressure says "slow down."</p>
+        <p class="thread"><span class="lead-in">The circuit that should trip when limits fail —</span> <a href="circuit-breaker.html">circuit breakers</a> protect the server when rate limiting isn't enough — when the downstream is degraded, not just overloaded.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Rate limiting sits among backpressure, circuit breakers, queues, and caching">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">backpressure</text>
+          </g>
+          <g class="node learned" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">circuit breaker</text>
+          </g>
+          <g class="node learned" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">queues</text>
+          </g>
+          <g class="node learned" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">caching</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">rate limit</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="backpressure.html">Backpressure</a></li>
+          <li><a href="circuit-breaker.html">Circuit breakers</a></li>
+          <li><a href="queues.html">Queues as a design tool</a></li>
+          <li><a href="caching-strategies.html">Caching strategies</a></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Systems &amp; Distributed · flow control</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

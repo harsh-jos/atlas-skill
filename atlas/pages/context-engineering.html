@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Context Engineering — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>LLMs &amp; Generative AI</span><span class="dot"></span>
+      <span>patterns</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Context Engineering</h1>
+    <p class="standfirst">The discipline that replaced "prompt engineering" once context windows got big — managing what the model sees, not just how you ask.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>In 2023, the skill was <span class="term">prompt engineering</span>: how to phrase your question so the model answers correctly. The context window was 4K tokens. You thought about word choice, delimiters, few-shot examples. By 2025, the context window was 200K tokens — and the skill shifted to <span class="term">context engineering</span>: what information to put in the window, in what order, with what structure, at what level of detail. When the context window is large enough to hold entire codebases, the problem stops being "how do I ask?" and becomes "what do I include?"</p>
+
+<div class="pull">Prompt engineering is about the question. Context engineering is about the evidence the model reads to answer it.</div>
+
+<h2>The four pillars</h2>
+
+<p>Context engineering breaks into four concerns:</p>
+
+<ol>
+  <li><strong>Instructions (system prompt):</strong> Who the model is, what constraints it operates under, what format it should output. The system prompt is the constitution — it should be stable, version-controlled, and tested. Start minimal (a few sentences), add constraints only in response to observed failures.</li>
+
+  <li><strong>Retrieval:</strong> What external information enters the context per-query. <a href="rag.html">RAG</a> is the mechanism; context engineering is the discipline of deciding what to retrieve, how much, and where to place it. A focused 300-token retrieval chunk often outperforms an unfocused 3,000-token chunk — the model's attention is a scarce resource, and every irrelevant token dilutes it.</li>
+
+  <li><strong>Memory:</strong> What the model remembers across turns in a conversation, and across sessions. Short-term memory is the conversation history (managed by summarization and compaction — old turns are summarized and removed when the context window fills). Long-term memory is what persists across sessions (user preferences, past interactions, facts the user has explicitly asked the model to remember). Memory management is the hardest unsolved problem in context engineering.</li>
+
+  <li><strong>Tools:</strong> What the model can do beyond generating text. Each tool's description occupies context tokens. A bloated tool set (20+ MCP servers, 50+ functions) saturates the context and degrades performance. The rule: fewer, more precise tools outperform many vague ones. Limit active tools to the set genuinely needed for the current task.</li>
+</ol>
+
+<h2>The attention budget</h2>
+
+<p>The most important concept in context engineering: <strong>the model's attention is a finite resource, and every token in the context competes for it.</strong> The "lost in the middle" phenomenon (Liu et al., 2023) showed that LLMs attend most strongly to the beginning and end of the context. Information in the middle is less likely to influence the output. A 201-token context and a 200K-token context have the same shape of attention: U-shaped, with peaks at the edges and a valley in the middle.</p>
+
+<p>Practical implications:</p>
+<ul>
+  <li>Put the most important information at the <strong>start</strong> (system prompt, critical constraints) or the <strong>end</strong> (the most recent conversation turn, the most relevant retrieved document).</li>
+  <li>If you're stuffing a context with 50 retrieved documents, the ones in positions 20–30 are effectively invisible. Retrieve fewer, better documents, and position them thoughtfully.</li>
+  <li>Token budgeting: a 300-token focused context often outperforms a 113K-token unfocused one. Context length is a cost, not a feature — you pay for every token in latency and attention dilution.</li>
+</ul>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  Your coding agent has a CLAUDE.md that's grown to 800 lines over six months. The agent's performance has degraded — it ignores instructions that used to work. You trim CLAUDE.md to 40 lines. What specific mechanism explains why this helps?
+</div>
+
+<p>Attention dilution and the lost-in-the-middle effect. An 800-line instructions file means the model's critical behavioral constraints are buried in a haystack of context. The model's attention at the instruction-rich positions (start and end) is spread across too many competing directives. Trimming to 40 lines puts every instruction in the high-attention zone, and the model can actually follow all of them because they're not competing with each other for a finite attention budget. The general rule: your instructions file should contain only what the model <em>fails</em> at without being told. If the model already gets it right without the instruction, the instruction is context debt.</p>
+
+<h2>Conversation compaction</h2>
+
+<p>Conversations grow. A coding session with 50 turns and large tool outputs can reach 100K tokens. At that point, new turns are competing with old turns for attention, and the model starts forgetting what happened near the beginning. <span class="term">Compaction</span> is the solution: periodically summarize the conversation so far, replace the full history with the summary, and continue. The summary preserves the <em>decisions</em> and <em>state</em> (what we did, why, what the current state is) while discarding the <em>process</em> (the specific tool calls, the intermediate outputs, the debugging dead ends).</p>
+
+<p>Compaction is lossy compression for conversations. The art is deciding what to keep: errors the model should learn from, decisions that constrain future choices, facts the model will need to reference later. What to discard: successful tool calls whose results are no longer relevant, debugging detours that were resolved, verbose output that's been consumed.</p>
+
+<h2>The harness layer</h2>
+
+<p>By 2026, the frontier has moved beyond context to <span class="term">harness engineering</span>: the system surrounding the model that enforces correctness regardless of what the model generates. A harness can:</p>
+<ul>
+  <li>Verify the model's output against a schema before returning it to the user</li>
+  <li>Run the model's generated code through a linter/type-checker and feed errors back as context</li>
+  <li>Enforce that the model cannot call certain tools or access certain paths, regardless of what the user's prompt says</li>
+  <li>Track the model's trajectory across a session and detect loops, stalls, or degradation</li>
+</ul>
+
+<p>The insight: the model is one component in a system. Context engineering manages what goes into it. Harness engineering manages what comes out. Together, they're the engineering discipline that turns a raw LLM into a reliable product.</p>
+
+<div class="lens">
+  <span class="lens-tag">the discipline</span>
+  Context engineering is invisible when it works and catastrophic when it fails. A well-engineered context is short, structured, and focused. A poorly engineered context is long, meandering, and the model's output degrades in ways that are hard to attribute to the context — you just see lower quality and don't know why. The fix is the same as for any engineering discipline: version your system prompts, A/B test changes, and measure the output quality quantitatively. A system prompt is code. Treat it like code.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The retrieval half —</span> <a href="rag.html">RAG</a> is the mechanism that fills the context with external knowledge. Context engineering is the discipline of what to retrieve and where to put it.</p>
+        <p class="thread"><span class="lead-in">How the model responds to the context —</span> <a href="llm-decoding.html">sampling & decoding</a> determines what the model <em>does</em> with the context you've engineered.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Context engineering sits among RAG, decoding, fine-tuning, and LLM evals">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">RAG</text>
+          </g>
+          <g class="node learned" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">decoding</text>
+          </g>
+          <g class="node" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">fine-tuning</text>
+          </g>
+          <g class="node" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">LLM evals</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">context eng.</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="rag.html">Retrieval-augmented generation</a></li>
+          <li><a href="llm-decoding.html">Sampling & decoding</a></li>
+          <li><span class="meta-line">Fine-tuning vs RAG vs prompting · frontier</span></li>
+          <li><span class="meta-line">Evaluating LLM systems · frontier</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">LLMs &amp; Generative AI · patterns</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Caching Strategies &amp; Invalidation — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Engineering Practice</span><span class="dot"></span>
+      <span>performance</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Caching Strategies &amp; Invalidation</h1>
+    <p class="standfirst">One of the two hard problems in computer science — and the map of solutions that makes it tractable.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>Phil Karlton: "There are only two hard things in Computer Science: cache invalidation and naming things." The joke is famous because both halves are true. Naming is a design problem with no algorithm. Caching is a mathematical problem with several algorithms, all of which are correct in some cases and disastrous in others.</p>
+
+<p>A cache is a smaller, faster store that holds a subset of a larger, slower store. The assumption is that recently accessed data is likely to be accessed again (<span class="term">temporal locality</span>) and that data near a recently accessed location is likely to be accessed soon (<span class="term">spatial locality</span>). The hard part isn't building the cache — it's knowing when the cached copy differs from the source of truth, and what to do about it.</p>
+
+<h2>The invalidation spectrum</h2>
+
+<p>All caching strategies answer one question: <strong>how long is a cached value allowed to be wrong?</strong></p>
+
+<ul>
+  <li><strong>TTL-based (time to live):</strong> The cached value is valid for N seconds. After that, fetch from the source. Simple, universal, and always slightly wrong — during the window between the source changing and the TTL expiring, users see stale data. The TTL <em>is</em> your staleness budget. Good when staleness is acceptable and the cost of precise invalidation exceeds the cost of occasional staleness.</li>
+
+  <li><strong>Write-through:</strong> Write to the cache and the source simultaneously. The cache is never stale, but every write takes the latency of both stores. Good when read latency matters more than write latency, and writes are infrequent relative to reads.</li>
+
+  <li><strong>Write-behind (write-back):</strong> Write to the cache; asynchronously flush to the source. Writes are fast (cache latency only), but the cache can lose data if it crashes before flushing. Good when write latency matters and data loss from a cache crash is acceptable (or the cache is persistent, like <a href="redis.html">Redis</a> with AOF).</li>
+
+  <li><strong>Cache-aside (look-aside):</strong> The application manages the cache explicitly. On read: check cache, if miss, fetch from source and populate cache. On write: update source, invalidate cache. The most common pattern in application code. The danger: the <span class="term">thundering herd</span> — when a hot key expires and 100 simultaneous requests all miss the cache and hammer the source simultaneously.</li>
+
+  <li><strong>Read-through / write-through (cache-as-SoR):</strong> The cache sits between the application and the source. The application only talks to the cache. The cache handles misses (fetching from source) and writes (propagating to source). The application code is simpler; the cache is more complex.</li>
+</ul>
+
+<div class="pull">The pattern that generates the most production incidents: cache-aside with lazy TTL extension for hot keys, but forgetting to handle the case where the source is slow — and the stale cache value is better than nothing.</div>
+
+<h2>The thundering herd and how to tame it</h2>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  A key with a 60-second TTL gets 1,000 requests per second. It expires. All 1,000 requests miss the cache simultaneously and hit the database. The database, already at 80% load, can't handle the spike. Latency spikes, more requests pile up, the database tips over. What's the fix that adds zero latency to the happy path?
+</div>
+
+<p><span class="term">Probabilistic early recomputation.</span> When a request finds that the key's TTL has only X% remaining (say, 20%), it <em>probabilistically</em> decides to refresh the cache before expiry. The probability increases as the TTL approaches zero. Only one of the many requests in the danger window triggers a refresh; the rest see the still-valid cached value. The key never actually expires under load. This adds zero latency to the happy path and prevents the thundering herd entirely. Redis calls this "active expiry" in some contexts; CDNs call it "stale-while-revalidate."</p>
+
+<h2>Cache eviction: what to throw away</h2>
+
+<p>When the cache is full, you must evict something. The eviction policy is the cache's theory of what won't be needed soon:</p>
+
+<ul>
+  <li><strong>LRU (Least Recently Used):</strong> Evict the item accessed longest ago. Good for temporal locality. Bad for scans (a full-table scan evicts everything useful).</li>
+  <li><strong>LFU (Least Frequently Used):</strong> Evict the item accessed fewest times. Good for popularity-based workloads. Bad for items that were popular historically but are now cold — they stick around forever on past popularity.</li>
+  <li><strong>TTL-only:</strong> Evict by expiration time only. No access-frequency consideration. Good when the workload is uniform and you want simplicity.</li>
+  <li><strong>Segmented LRU (SLRU):</strong> Separate the cache into a probationary segment and a protected segment. New items enter probation; if accessed again, promoted to protected. Protected items evicted back to probation on overflow. This is what real caches use (Memcached, Varnish).</li>
+</ul>
+
+<div class="lens">
+  <span class="lens-tag">the real cost</span>
+  Cache invalidation is hard because it's a <em>distributed systems</em> problem disguised as a data structure problem. The cache and the source are two independent systems. Keeping them consistent requires either a protocol (write-through, invalidation messages) or accepting staleness. There's no third option. The most common production caching failure is using a TTL that's too optimistic (too long → users see stale data → business logic makes decisions on stale data → writes based on stale reads corrupt the source). Set your TTL based on the business's tolerance for staleness, not on what feels reasonable to an engineer.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The distributed cache that's more than a cache —</span> <span class="meta-line">Redis beyond the cache</span> is the Swiss Army knife that implements most of these patterns in production.</p>
+        <p class="thread"><span class="lead-in">DNS's approach to the same problem —</span> <a href="dns-deep.html">DNS is a distributed database</a> that uses TTL-based caching at planetary scale.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Caching strategies sit among Redis, DNS, HTTP evolution, and rate limiting">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">Redis</text>
+          </g>
+          <g class="node learned" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">DNS</text>
+          </g>
+          <g class="node learned" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">HTTP evo.</text>
+          </g>
+          <g class="node" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">rate limiting</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">caching</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><span class="meta-line">Redis beyond the cache · frontier</span></li>
+          <li><a href="dns-deep.html">DNS is a distributed database</a></li>
+          <li><a href="http-evolution.html">HTTP/1.1 → 2 → 3</a></li>
+          <li><span class="meta-line">Rate limiting · frontier</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Engineering Practice · performance</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

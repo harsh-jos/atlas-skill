@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Atomics &amp; Lock-Free Programming — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Concurrency &amp; Parallelism</span><span class="dot"></span>
+      <span>synchronization</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Atomics &amp; Lock-Free Programming</h1>
+    <p class="standfirst">Coordinating threads without ever taking a lock — using the hardware's native compare-and-swap to build data structures that can't deadlock.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p><a href="locks.html">Locks</a> solve concurrency by serialization: one thread at a time. The cost is contention — N-1 threads wait while thread N holds the lock. For most application code, this is fine. For the hot path of a database, a high-frequency trading engine, or an OS kernel, it's not. You need coordination without waiting.</p>
+
+<p><span class="term">Lock-free programming</span> uses hardware-provided atomic operations — instructions that read, modify, and write memory as a single indivisible unit — to build concurrent data structures where threads never block. A thread might need to retry (if another thread interfered), but it never waits on a lock holder. Progress is guaranteed without serialization.</p>
+
+<div class="pull">A lock says "wait your turn." An atomic says "try, and if someone else got there first, try again."</div>
+
+<h2>CAS: the universal atomic primitive</h2>
+
+<p><span class="term">Compare-and-swap</span> (CAS) is the atomic operation that makes lock-free programming possible. It takes a memory location, an expected old value, and a new value. If the location currently holds the expected value, it atomically writes the new value and returns true. Otherwise, it returns false and leaves the location unchanged. The entire read-compare-write sequence happens in one hardware instruction (<code>LOCK CMPXCHG</code> on x86, <code>LDREX/STREX</code> on ARM).</p>
+
+<pre class="pre-label">CAS, conceptually (but it's a single instruction)
+bool CAS(addr, expected, new):
+    atomically:
+        if *addr == expected:
+            *addr = new
+            return true
+        else:
+            return false</pre>
+
+<p>The pattern for using CAS: read the current value, compute the desired new value, attempt CAS. If CAS fails (someone else changed the value between your read and your CAS), retry. This is the <span class="term">CAS loop</span>, and it's the fundamental building block of lock-free data structures:</p>
+
+<pre class="pre-label">Lock-free counter increment
+def increment(counter):
+    do:
+        old = atomic_read(counter)
+        new = old + 1
+    while !CAS(counter, old, new)</pre>
+
+<p>No lock is ever acquired. Under low contention, CAS succeeds on the first try. Under high contention, threads retry, but they're making progress (someone's CAS succeeds each cycle) rather than waiting for a lock holder to finish. This is the <span class="term">lock-free</span> guarantee: at least one thread makes progress in any finite number of steps.</p>
+
+<h2>Memory ordering: the sharp edge</h2>
+
+<p>Atomic operations aren't just about indivisibility — they're about <em>visibility</em>. A plain store from one thread might not be visible to another thread for an arbitrarily long time (due to store buffers, cache coherence, and compiler reordering). Atomics let you specify <em>what else</em> must be visible when the atomic operation completes.</p>
+
+<p>The ordering options, from weakest to strongest:</p>
+<ul>
+  <li><strong>Relaxed:</strong> Only atomicity is guaranteed. No ordering with respect to other memory operations. Cheapest. Use for simple counters where you only care about the final value, not when other threads see it.</li>
+  <li><strong>Acquire (load) / Release (store):</strong> An acquire-load ensures all subsequent reads and writes see the effects of the release-store that wrote that value. Together, they form a happens-before relationship between two threads. This is the minimum you need for most producer-consumer patterns.</li>
+  <li><strong>Sequentially consistent (seq_cst):</strong> All threads see all seq_cst operations in a single global order. The strongest guarantee, the most expensive, the default in most languages. Use when you're not sure — it's never wrong, just potentially slower.</li>
+</ul>
+
+<p>The practical rule: use <code>acquire/release</code> when you're building a specific synchronization pattern (flag, queue, lock-free stack). Use <code>relaxed</code> for counters where ordering doesn't matter. Use <code>seq_cst</code> (the default) when you're unsure or the cost isn't measurable. Getting memory ordering wrong produces bugs that reproduce on ARM but not x86, only under load, once a week.</p>
+
+<h2>ABA: the CAS bug that looks like it worked</h2>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  Thread A reads the top of a lock-free stack: node X. Thread B pops X, pops Y, then pushes X back. Thread A now does CAS, comparing the old top (X) with the current top — which is also X. CAS succeeds, but the stack's structure is now wrong. What is this called, and what's the fix?
+</div>
+
+<p>This is the <span class="term">ABA problem</span>. Between thread A's read and its CAS, the value changed from A to B and back to A. CAS sees A and says "nothing changed," but the structure changed profoundly. The fix: attach a <span class="term">version tag</span> (or sequence number) to the pointer. Instead of CAS on just the pointer, CAS on the pointer+tag as a single wide value (128-bit CAS on x86, or a double-word CAS). Each modification increments the tag, so even if the pointer is the same, the tag differs and CAS correctly fails. Languages with garbage collection avoid ABA naturally (a popped node is still allocated, so its address can't be reused immediately), but in C/C++ and Rust, ABA is a real hazard.</p>
+
+<div class="lens">
+  <span class="lens-tag">when not to go lock-free</span>
+  Lock-free data structures are harder to write, test, and debug than their locked counterparts. A correctly implemented lock-free queue is a minor miracle of engineering. An incorrectly implemented one fails silently and non-deterministically. The standard advice: use the language's built-in lock-free structures (Java's <code>ConcurrentLinkedQueue</code>, Rust's <code>crossbeam</code>, C++'s <code>concurrent_queue</code>). Only write your own if you've profiled the built-in one, found it's the bottleneck, and can explain the memory ordering of every atomic operation in your replacement. The number of people who should write a lock-free data structure from scratch is small and shrinking.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The foundation —</span> <a href="race-conditions.html">race conditions & memory models</a> explains why atomics are necessary and what memory ordering guarantees mean at the hardware level.</p>
+        <p class="thread"><span class="lead-in">The locked alternative —</span> <a href="locks.html">locks, deadlock & livelock</a> covers the approach atomics replace. Read both to know which tool fits which problem.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Atomics sit among race conditions, locks, async models, and MVCC">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">race cond.</text>
+          </g>
+          <g class="node learned" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">locks</text>
+          </g>
+          <g class="node learned" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">async models</text>
+          </g>
+          <g class="node learned" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">MVCC</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">atomics</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="race-conditions.html">Race conditions & memory models</a></li>
+          <li><a href="locks.html">Locks, deadlock & livelock</a></li>
+          <li><a href="async-models.html">Event loops vs threads vs coroutines</a></li>
+          <li><a href="mvcc.html">MVCC</a></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Concurrency &amp; Parallelism · synchronization</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

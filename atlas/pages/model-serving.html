@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Model Serving: Batch vs Online — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>ML Systems &amp; MLOps</span><span class="dot"></span>
+      <span>inference</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Model Serving: Batch vs Online</h1>
+    <p class="standfirst">The architecture choice that decides your latency and your bill — and the inference engines that make LLM serving a distinct discipline.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>Training a model is a batch job: you submit it, it runs for hours or days, you get weights. Serving is the other half — making those weights available to answer queries — and it's where most of the cost and complexity of production ML lives. A model that costs $10K to train might cost $100K to serve over its lifetime. The architecture choices you make about serving determine whether that number is $50K or $500K.</p>
+
+<h2>Batch inference: maximize throughput</h2>
+
+<p>Batch inference is the simple case: you have a fixed dataset (a million images to classify, a million documents to embed), no latency requirements, and the goal is to process everything as quickly and cheaply as possible. You load the model, feed it the data in large batches, and write the results to storage. The optimization is purely about tokens-per-second per GPU and cost-per-token.</p>
+
+<p>Batch inference uses the same model weights as online inference but different infrastructure. You don't need a server that stays up 24/7 — you need a job that runs, scales to as many GPUs as your budget allows, and shuts down. Ray Data, Spark ML, and vLLM's offline mode are the standard tools. The cost optimization is straightforward: use spot/preemptible instances, pack batches to GPU memory limits, and choose the smallest model that meets your accuracy requirements.</p>
+
+<div class="pull">Batch inference is about throughput. Online inference is about latency. The same model, same weights, radically different infrastructure.</div>
+
+<h2>Online inference: minimize time-to-first-token</h2>
+
+<p>Online inference means a user is waiting. Every millisecond of latency is a degraded experience. The goal isn't maximum throughput — it's meeting a latency SLO (typically p95 < 200ms time-to-first-token, p95 < 50ms time-per-output-token for LLMs) while handling variable, bursty traffic.</p>
+
+<p>The key technique is <span class="term">continuous batching</span>: instead of waiting for a fixed batch to fill before running inference, the server dynamically adds new requests to the currently-running batch at each iteration. Requests that finish (reaching their end token or max length) are removed; new requests are added. This is the single biggest throughput improvement in LLM serving — it can increase throughput by 3–10× over static batching, because the GPU is never idle waiting for a slow request to finish its generation.</p>
+
+<p>The other key technique: <span class="term">PagedAttention</span> (from vLLM). The <a href="transformers.html">transformer's</a> KV cache — the stored keys and values from previous tokens that attention needs — is the dominant memory consumer during generation. Traditional implementations allocate contiguous memory for each sequence's KV cache up to the maximum sequence length, wasting 60–80% of allocated memory (most sequences are shorter than the max). PagedAttention allocates KV cache in non-contiguous blocks (like virtual memory pages), reducing waste to under 4%. This means you can fit 2–3× more concurrent requests on the same GPU.</p>
+
+<h2>The inference engine landscape</h2>
+
+<table>
+  <tr><th>Engine</th><th>Best for</th><th>Throughput</th><th>Complexity</th></tr>
+  <tr><td><strong>vLLM</strong></td><td>General production, rapid deployment</td><td>High</td><td>Low</td></tr>
+  <tr><td><strong>TensorRT-LLM</strong></td><td>NVIDIA-only, max throughput per GPU</td><td>Highest (20–40% > vLLM)</td><td>High (compile step)</td></tr>
+  <tr><td><strong>SGLang</strong></td><td>Agentic/RAG with shared prefixes</td><td>High (2–5× on prefix-heavy)</td><td>Medium</td></tr>
+  <tr><td><strong>TGI</strong></td><td>Hugging Face native, broad model coverage</td><td>Moderate</td><td>Low</td></tr>
+</table>
+
+<p>The practical default in 2026: start with vLLM. It's the easiest to deploy, has the largest community, and its throughput is competitive. Migrate to TensorRT-LLM if you're on homogeneous NVIDIA hardware and need to squeeze every token-per-second from each GPU. Consider SGLang if your workload has heavy prefix reuse (many requests sharing the same system prompt or RAG context).</p>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  You're serving a 70B model with continuous batching. At low concurrency (5 concurrent users), time-per-output-token is 30ms. At high concurrency (100 users), it's 80ms. What's the bottleneck, and what's the architectural fix that doesn't involve more GPUs?
+</div>
+
+<p>The bottleneck is likely the <span class="term">KV cache</span> competing for GPU memory. At high concurrency, more sequences means more KV cache, and the working set might exceed the GPU's memory bandwidth. The fix: <strong>quantize the KV cache</strong> to FP8 or INT8, cutting its memory footprint by 50% with minimal quality loss. Or use <span class="term">prefix caching</span> (SGLang's RadixAttention, vLLM's automatic prefix caching): if multiple requests share a system prompt or RAG context, the KV cache for that shared prefix is computed once and reused. For agentic workloads with long shared prefixes, this can improve throughput 2–5× without adding GPUs.</p>
+
+<h2>The disaggregated future</h2>
+
+<p>An emerging architecture (2025–2026): separate the <span class="term">prefill</span> (processing the input prompt, compute-bound) from <span class="term">decode</span> (generating output tokens, memory-bound) onto different GPU pools. Prefill GPUs are optimized for high FLOPs; decode GPUs for high memory bandwidth. You can scale them independently — more prefill GPUs during traffic spikes, more decode GPUs for long-generation workloads. SGLang and vLLM both have disaggregated serving modes in 2026. It's not the default yet, but it's the direction of travel.</p>
+
+<div class="lens">
+  <span class="lens-tag">the real cost</span>
+  LLM serving is expensive not because inference is slow — it's because GPUs are idle between requests. A typical production LLM service has 30–60% GPU utilization. The rest is waiting for the next request. Continuous batching helps (fill the idle time with other requests), but the fundamental economics are: you're renting a GPU 24/7, and it's doing useful work half the time. The cost optimization frontier is about increasing utilization: multi-model serving (multiple fine-tuned variants sharing the same GPU), spot instances for batch inference, and request scheduling that smooths out bursty traffic. The biggest cost reduction in LLM serving in 2026 isn't a faster engine — it's better utilization of the engines you already have.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">Making models smaller before serving —</span> <a href="quantization.html">quantization & distillation</a> is the preprocessing step that reduces the model's memory footprint, which directly determines how many requests fit on a GPU.</p>
+        <p class="thread"><span class="lead-in">The data pipeline feeding the model —</span> <span class="meta-line">feature stores</span> ensure the features used in training are available at serving time, in the same format, with the same semantics.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Model serving sits among quantization, transformers, feature stores, and data drift">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">quantization</text>
+          </g>
+          <g class="node learned" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">transformers</text>
+          </g>
+          <g class="node" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">feature stores</text>
+          </g>
+          <g class="node" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">data drift</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">model serving</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="quantization.html">Quantization & distillation</a></li>
+          <li><a href="transformers.html">The transformer</a></li>
+          <li><span class="meta-line">Feature stores · frontier</span></li>
+          <li><span class="meta-line">Data & concept drift · frontier</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">ML Systems &amp; MLOps · inference</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

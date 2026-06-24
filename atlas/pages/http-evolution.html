@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HTTP/1.1 → 2 → 3 — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Networking &amp; Protocols</span><span class="dot"></span>
+      <span>application</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">HTTP/1.1 → 2 → 3</h1>
+    <p class="standfirst">What each version actually fixed, why HTTP/3 left TCP behind, and the 30-year evolution of the protocol that delivers the web.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>HTTP/1.1 was standardized in 1997. It's still the fallback for every web request made in 2026. The fact that a protocol designed for documents with inline images still works for interactive SPAs, video streaming, and real-time APIs is either a testament to good design or evidence that the web has been dragging around legacy baggage for three decades. Both are true.</p>
+
+<p>Each HTTP version solves the most painful problem of its predecessor, and that pain tells you more about how the web changed than any feature list.</p>
+
+<h2>HTTP/1.1: one request at a time (per connection)</h2>
+
+<p>The problem HTTP/1.1 solved was connection overhead. HTTP/1.0 opened a new TCP connection for every request — image, stylesheet, script. TCP's three-way handshake + slow start meant each connection spent more time setting up than transferring data. HTTP/1.1 added <span class="term">persistent connections</span> (keep-alive): reuse the same TCP connection for multiple requests. This was a massive improvement and is still the default behavior.</p>
+
+<p>But HTTP/1.1 had a structural limit: <span class="term">head-of-line blocking</span>. A request must fully complete before the response to the next request on the same connection can begin. If request 1 is a slow database query, requests 2–6 queue up behind it. Browsers worked around this by opening 6 parallel connections per origin — a hack that became a de facto standard. But 6 connections means 6 TCP handshakes, 6 congestion control states, and 6× the connection overhead.</p>
+
+<div class="pull">HTTP/2 fixed head-of-line blocking at the HTTP layer. HTTP/3 fixed it at the transport layer. The difference is everything.</div>
+
+<h2>HTTP/2: multiplexing over one TCP connection</h2>
+
+<p>HTTP/2 (standardized 2015, now used by ~70% of websites) introduced <span class="term">stream multiplexing</span>: many requests and responses interleaved over a single TCP connection. Each request gets a stream ID; frames on different streams are multiplexed onto the wire; the receiver reassembles them. One TCP connection, many concurrent requests, no head-of-line blocking at the HTTP level.</p>
+
+<p>HTTP/2 also brought header compression (HPACK), server push (the server can send resources before the client asks — now largely deprecated because it was hard to get right), and binary framing (HTTP/1.1 is text; HTTP/2 is binary, which is faster to parse).</p>
+
+<p>The catch: TCP itself still imposes ordering. If a TCP packet is lost, every stream on that connection stalls until the packet is retransmitted. HTTP/2 fixed head-of-line blocking in the application layer but inherited it from the transport layer. On a lossy network (mobile, congested WiFi), HTTP/2 can be <em>slower</em> than HTTP/1.1 with 6 connections — one lost packet on the single TCP connection blocks everything, whereas with 6 connections only one stalls.</p>
+
+<h2>HTTP/3: QUIC replaces TCP</h2>
+
+<p>HTTP/3 (standardized 2021, ~35% of websites as of 2026) makes the biggest architectural change in HTTP's history: it replaces TCP with <span class="term">QUIC</span>, a transport protocol built on UDP. The key insight: TCP's in-order delivery guarantee is the problem. QUIC delivers streams independently — a lost packet on stream 5 doesn't block streams 1, 2, 3, or 4. Each stream has its own loss recovery.</p>
+
+<pre class="pre-label">The HTTP/3 stack
+HTTP/3  ─┐
+QUIC    ─┤  (single protocol: transport + encryption + multiplexing)
+UDP     ─┘
+IP</pre>
+
+<p>QUIC folds TLS 1.3 into the transport layer. There's no separate handshake — the QUIC handshake includes key exchange, so you get encryption and transport setup in one round trip (0-RTT for returning connections). Connection migration is built in: a QUIC connection is identified by a <span class="term">Connection ID</span>, not by IP:port. Switch from WiFi to cellular, and the connection survives — the server sees the new IP, recognizes the Connection ID, and continues. This is invisible to the HTTP layer.</p>
+
+<p>QUIC also eliminates the TCP ossification problem. TCP's wire format is so widely understood by middleboxes (firewalls, NATs, load balancers) that evolving it is nearly impossible — any new TCP option gets stripped or blocked by some box in the path. QUIC runs over UDP and encrypts almost everything (including metadata like packet numbers), so middleboxes see opaque UDP datagrams. The protocol can evolve without asking permission from every network operator between the client and server.</p>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  You deploy HTTP/3 behind your load balancer. Users on corporate networks report your site is inaccessible. Your site works fine on home connections. What's the most likely cause?
+</div>
+
+<p>UDP port 443 is blocked. QUIC runs over UDP, and many corporate firewalls block UDP by default (or restrict it to DNS on port 53). The fix is both technical and operational: ensure your deployment advertises HTTP/3 via the <code>Alt-Svc</code> header (which tells the browser "this origin also supports HTTP/3 at this endpoint"), and the browser will attempt QUIC, fall back to HTTP/2 over TCP on failure, and remember the outcome. Users on UDP-blocked networks get HTTP/2 — slightly slower but functional. This graceful degradation is load-bearing: without it, HTTP/3 adoption would be near zero because network operators can't be trusted to unblock UDP.</p>
+
+<h2>The numbers that matter</h2>
+
+<p>On a low-loss network (data center, good WiFi), HTTP/3 is 10–20% faster than HTTP/2. On a lossy network (mobile, 1%+ packet loss), HTTP/3 is 30–60% faster. The gains come almost entirely from per-stream loss recovery: one lost packet doesn't freeze the whole page. This is why HTTP/3 adoption correlates with mobile traffic — the more mobile users you have, the more HTTP/3 matters.</p>
+
+<div class="lens">
+  <span class="lens-tag">the CPU tax</span>
+  QUIC runs in userspace, not in the kernel. TCP has decades of kernel optimization (GSO, GRO, TSO, hardware offload); QUIC is catching up. On a high-throughput server, QUIC can consume 2–3× more CPU than TCP for the same throughput. This is improving (kernel-bypass QUIC stacks, hardware offload), but as of 2026, HTTP/3 deployment is a trade: better user experience on lossy networks for higher server CPU cost. For an internal service running on a 10GbE LAN with near-zero packet loss, HTTP/2 is faster and cheaper. For a global CDN serving mobile users, HTTP/3 is a clear win.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The transport layer HTTP/3 replaced —</span> <span class="meta-line">TCP, past the handshake</span> covers congestion control, head-of-line blocking at the TCP level, and why TCP feels slow.</p>
+        <p class="thread"><span class="lead-in">The encryption in every QUIC packet —</span> <a href="tls.html">TLS</a> explains the handshake that QUIC integrates into its transport layer.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: HTTP evolution sits among TCP, TLS, DNS, and load balancing">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">TCP deep</text>
+          </g>
+          <g class="node learned" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">TLS</text>
+          </g>
+          <g class="node learned" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">DNS</text>
+          </g>
+          <g class="node" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">load bal.</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">HTTP evo.</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><span class="meta-line">TCP, past the handshake · frontier</span></li>
+          <li><a href="tls.html">How TLS actually works</a></li>
+          <li><a href="dns-deep.html">DNS is a distributed database</a></li>
+          <li><span class="meta-line">Load balancing · frontier</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Networking &amp; Protocols · application</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

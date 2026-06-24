@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Write-Ahead Logging — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Data &amp; Storage</span><span class="dot"></span>
+      <span>durability</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Write-Ahead Logging</h1>
+    <p class="standfirst">The trick that lets a database survive a power cut mid-write — and the reason your data is still there when you come back.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>Picture a database in the middle of updating a row. It's modified the index page in memory, flipped a few bits in the heap, and adjusted a pointer. The disk is halfway through writing these changes. Then the power goes out.</p>
+
+<p>When the machine comes back, the database opens its files and finds chaos: a half-written page here, a pointer to nowhere there. Without some other source of truth, that row — and possibly the whole table — is corrupted. Not just the row you were writing; the <em>structural</em> integrity of the database itself is compromised, because index pages and data pages disagree about where things live.</p>
+
+<p>This is the problem <span class="term">durability</span> is meant to solve, and write-ahead logging is how almost every serious database solves it.</p>
+
+<h2>The one rule</h2>
+
+<div class="pull">Before you change the data, write down what you're about to do.</div>
+
+<p>That's it. Before any modification touches the actual data files, the database writes a record to an append-only log describing the change. Only after that log record is safely on disk does it modify the real data structures in memory — and eventually flush those to disk too.</p>
+
+<p>The log is the source of truth. The data files are a cache of the log at a point in time. If the machine dies, on restart the database replays the log: anything that was written to the log but not yet reflected in the data files gets re-applied. Anything that never made it to the log never happened.</p>
+
+<p>This sounds simple, but the implications run deep. Let's follow a single write through the system.</p>
+
+<h2>A write, step by step</h2>
+
+<p>You execute <code>UPDATE accounts SET balance = 50 WHERE id = 7</code>. Here's what actually happens inside a WAL-backed database:</p>
+
+<ol>
+  <li><strong>Build the log record.</strong> The database constructs a record that says, roughly: "at time T, in transaction 42, row id=7 in table accounts changed column balance from 40 to 50." It includes the old value (for undo) and the new value (for redo).</li>
+
+  <li><strong>Write to the WAL.</strong> This record is appended to the end of the write-ahead log file. The database calls <code>fsync()</code> (or its OS equivalent) to make sure the bytes actually hit disk, not just the OS buffer cache.</li>
+
+  <li><strong>Now it's durable.</strong> Once <code>fsync()</code> returns, the database can tell the client "committed." The change will survive a crash. The actual table data in memory and on disk might still be the old version — that's fine. The log has the truth.</li>
+
+  <li><strong>Apply to in-memory data structures.</strong> The buffer pool page for this row is updated. Other transactions can now see the new value.</li>
+
+  <li><strong>Eventually, flush to data files.</strong> At some future checkpoint, the database writes the dirty pages to the main data files and records "log entries up to position X have been applied" — so on the next restart, it can skip replaying those entries.</li>
+</ol>
+
+<p>The critical ordering is step 2 before step 4. The WAL write <em>must</em> happen before the data structure modification. If you do it the other way around and crash between them, the data file says "50" but the log has no record of it — and if another part of the system also modified that row, replay might quietly overwrite your change with something else. The WAL-first ordering means the worst case is redoing work you already did, never losing work you thought was done.</p>
+
+<h2>What the log actually looks like</h2>
+
+<p>A WAL isn't a text file. It's a sequence of binary records, each with a monotonically increasing <span class="term">Log Sequence Number</span> (LSN). A typical record contains:</p>
+
+<pre class="pre-label">WAL record structure (conceptual)
+┌──────────┬────────┬──────────┬──────────────┬───────────┬────────┐
+│ LSN (8B) │ Txn ID │ Page ID  │  Operation   │ Old value │ New    │
+│          │        │          │  (insert/    │  (undo)   │ (redo) │
+│          │        │          │   update/del)│           │        │
+└──────────┴────────┴──────────┴──────────────┴───────────┴────────┘</pre>
+
+<p>In practice, databases use various optimizations. <em>Physiological logging</em> records logical operations (what the user asked for) scoped to physical pages (where it happened). This gives you the best of both: the log record is small (logical), but recovery can reapply it to a specific page without re-executing SQL (physical).</p>
+
+<p>The LSN ordering is what makes everything work. Every page in the database stores the LSN of the last log record that modified it. During recovery, the database compares each page's LSN to the log: if the log has entries past the page's LSN, those entries need to be replayed onto that page.</p>
+
+<h2>Checkpoints: stopping the log from eating your disk</h2>
+
+<p>If you appended to the WAL forever, you'd run out of disk. Worse, recovery would take hours — replaying a year of log entries on restart is not a good time. The answer is <span class="term">checkpointing</span>.</p>
+
+<p>A checkpoint does two things:</p>
+
+<ol>
+  <li><strong>Flush all dirty pages</strong> from the buffer pool to the data files.</li>
+  <li><strong>Write a checkpoint record</strong> to the WAL that says "all log entries before LSN N have been applied to the data files."</li>
+</ol>
+
+<p>On recovery, the database finds the last checkpoint record, jumps to that LSN, and replays only the entries after it. Entries before the checkpoint can be safely ignored — and if the WAL is split into segments, those old segments can be recycled or deleted.</p>
+
+<p>Checkpointing is a balancing act. Checkpoint too often and you hammer the disk with writes, killing throughput. Checkpoint too rarely and recovery takes forever. Most databases let you tune this with a target recovery time ("I'm willing to wait up to 30 seconds on restart") or a WAL size cap.</p>
+
+<h2>Where the WAL shows up, beyond the obvious</h2>
+
+<p>The WAL is the engine under a surprising number of features that seem unrelated:</p>
+
+<ul>
+  <li><strong>Replication.</strong> Instead of shipping data pages, the primary ships WAL entries to replicas. The replica replays the same log and arrives at the same state. This is <em>physical</em> replication (ship the WAL) vs <em>logical</em> replication (ship the SQL). WAL shipping is faster and more precise — the replica is byte-for-byte identical.</li>
+
+  <li><strong>Point-in-time recovery.</strong> Since the WAL is an ordered history of every change, you can replay it up to any LSN. Combine this with a base backup and you can restore the database to any moment — including right before someone ran <code>DROP TABLE</code>.</li>
+
+  <li><strong>Rollback.</strong> The old-value (undo) information in each WAL record is what lets a transaction abort halfway through: the database reads the undo records backward and reverses each change.</li>
+
+  <li><strong>Crash recovery for in-memory databases.</strong> Redis uses an append-only file (AOF) that is conceptually a WAL: commands are logged before they're applied, and replay rebuilds state. Even "pure cache" systems end up needing this pattern the moment durability matters.</li>
+</ul>
+
+<div class="beat">
+  <span class="beat-tag">your call</span>
+  A database writes the WAL entry, calls <code>fsync()</code>, then modifies the buffer pool page. But <code>fsync()</code> is slow — it might take milliseconds. What if you skip the <code>fsync()</code> and batch WAL writes, flushing every 100ms instead of every commit? Before you read on: what did you just trade away, and when is that trade correct?
+</div>
+
+<p>If you batch WAL flushes, you're trading durability for throughput. A transaction that committed in the last 100ms window might vanish if the machine dies. This is <span class="term">group commit</span> — the database acknowledges multiple transactions in one fsync — and it's the default in many systems because the throughput gain is substantial and the data-loss window is bounded and known.</p>
+
+<p>Postgres calls this <code>synchronous_commit = off</code>. MongoDB calls it <code>w: 1</code> with journaling. The trade is explicit: you lose up to N milliseconds of committed transactions on crash, but you gain 10–100x write throughput. For a social media feed, that's probably fine. For a bank ledger, it's not. The WAL gives you a <em>knob</em>; you decide where to set it.</p>
+
+<h2>The WAL is everywhere</h2>
+
+<p>Once you see the pattern, you notice it in places that don't call themselves databases:</p>
+
+<ul>
+  <li><strong>Filesystems.</strong> ZFS and ext4 journal metadata changes before applying them. A journal is a WAL. Same idea, different name.</li>
+  <li><strong>LSM-trees.</strong> Writes go to an in-memory memtable and an on-disk WAL. If the process dies, the memtable is rebuilt from the WAL. (This is why an <a href="lsm-tree.html">LSM-tree</a> can acknowledge writes at memory speed.)</li>
+  <li><strong>Kafka.</strong> Every message is appended to a log. Consumers track their position in that log. The log is the database.</li>
+  <li><strong>Git.</strong> Each commit points to a tree, which points to blobs. The reflog is a WAL of where HEAD has been. <code>git reflog</code> is recovery for your branch pointers.</li>
+</ul>
+
+<div class="lens">
+  <span class="lens-tag">when not to</span>
+  If your writes are idempotent and your dataset is small enough to reconstruct from scratch quickly, a WAL may be overkill. A cache that can repopulate from a source of truth on restart doesn't need one. And for write-once, read-many workloads (immutable data, append-only tables), the data files <em>are</em> the log — adding a WAL in front of them is redundant. The WAL earns its keep when writes are frequent, mutable, and painful to lose.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">One level deeper —</span> how <a href="lsm-tree.html">LSM-trees</a> combine a WAL with sorted files to turn random writes into sequential ones.</p>
+        <p class="thread"><span class="lead-in">The other half of the durability story —</span> <span class="meta-line">MVCC</span> uses the WAL's undo records to show you a consistent snapshot of the past without locking.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Write-ahead logging sits among LSM-trees, MVCC, filesystems, and Redis">
+          <line class="edge active" x1="140" y1="92" x2="70"  y2="38"/>
+          <line class="edge active" x1="140" y1="92" x2="210" y2="38"/>
+          <line class="edge active" x1="140" y1="92" x2="50"  y2="130"/>
+          <line class="edge active" x1="140" y1="92" x2="230" y2="130"/>
+          <line class="edge"        x1="70"  y1="38" x2="210" y2="38"/>
+
+          <g class="node learned" transform="translate(70,38)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">queues</text>
+          </g>
+          <g class="node" transform="translate(210,38)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">LSM-tree</text>
+          </g>
+          <g class="node" transform="translate(50,130)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">MVCC</text>
+          </g>
+          <g class="node" transform="translate(230,130)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">Redis</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">WAL</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><span class="meta-line">LSM-tree · frontier</span></li>
+          <li><span class="meta-line">MVCC · frontier</span></li>
+          <li><span class="meta-line">Redis · frontier</span></li>
+          <li><a href="queues.html">Queues as a design tool</a></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Data &amp; Storage · durability</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

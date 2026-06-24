@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Quantization &amp; Distillation — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>ML Systems &amp; MLOps</span><span class="dot"></span>
+      <span>efficiency</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Quantization &amp; Distillation</h1>
+    <p class="standfirst">Making a model smaller and faster while keeping most of its brain — the techniques that turn a GPU-only monster into something that runs on your laptop.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>A Llama-4-scale model in full FP16 precision needs about 2 GB of VRAM per billion parameters. A 70B model needs ~140 GB — multiple A100s or H100s just to load the weights. You can't run that on a laptop, on a phone, or in a cost-effective production service.</p>
+
+<p><span class="term">Quantization</span> is the answer: reduce the numerical precision of the model's weights (and optionally activations) from 16-bit floating point to something smaller — 8-bit, 4-bit, even 2-bit. The model becomes proportionally smaller and faster. The question is how much quality you lose in the compression, and the answer in 2026 is: surprisingly little.</p>
+
+<h2>Why quantization works at all</h2>
+
+<div class="pull">Neural network weights are not random numbers. They're concentrated around zero with a bell-curve distribution. Quantization exploits this structure.</div>
+
+<p>If weights were uniformly distributed across the FP16 range, quantization would be hopeless — you'd lose too much information. But trained weights cluster around zero, and the precise value of any single weight matters less than its value <em>relative to other weights</em> in the same layer. Quantization preserves the relative structure while discarding unnecessary precision. A weight of 0.00214 becomes "6" on a 4-bit scale from -8 to 7; the fact that it's slightly positive and small relative to other weights is preserved; the fact that it's exactly 0.00214 rather than 0.00213 is not, and that distinction rarely matters for the model's output.</p>
+
+<h2>The quantization formats</h2>
+
+<table>
+  <tr><th>Format</th><th>Bits</th><th>Size vs FP16</th><th>Best for</th></tr>
+  <tr><td>FP16 (baseline)</td><td>16</td><td>1×</td><td>Training, high-precision inference</td></tr>
+  <tr><td>INT8</td><td>8</td><td>0.5×</td><td>Near-lossless serving, CPU deployment</td></tr>
+  <tr><td>FP8</td><td>8</td><td>0.5×</td><td>H100/H200 native, 1.9× faster than FP16</td></tr>
+  <tr><td>INT4 (AWQ/GPTQ)</td><td>4</td><td>0.25×</td><td>GPU serving, good quality-speed balance</td></tr>
+  <tr><td>GGUF Q4_K_M</td><td>~4.5 avg</td><td>~0.28×</td><td>CPU/Apple Silicon, local inference</td></tr>
+</table>
+
+<p>The three quantization approaches you'll encounter in 2026:</p>
+
+<ul>
+  <li><strong>GPTQ (2022):</strong> Post-training quantization using an approximate second-order method (Optimal Brain Quantization). Processes the model layer by layer with a calibration dataset. Slow to quantize (hours for large models), but the resulting 4-bit model runs fast. The legacy standard.</li>
+
+  <li><strong>AWQ (2023):</strong> Activation-Aware Weight Quantization. The insight: not all weights are equally important. AWQ identifies the 1% of "salient" weights (those with consistently large activations) and keeps them at higher precision, quantizing the rest. Faster quantization than GPTQ (minutes), and consistently better quality retention on instruction-following and reasoning tasks. AWQ + the Marlin kernel (a GPU optimization for 4-bit matmul) is the fastest GPU serving option in 2026 — up to 10× faster than naive AWQ and faster than FP16.</li>
+
+  <li><strong>GGUF (llama.cpp):</strong> A file format, not a quantization algorithm. GGUF files contain quantized weights (using various schemes — Q4_K_M, Q5_K_M, Q8_0) plus all the metadata needed for inference. Designed for CPU and Apple Silicon via llama.cpp. The "K-quant" variants (Q4_K_M, Q5_K_M) use mixed precision — important layers at higher precision, less important layers at lower precision. The go-to format for local inference with Ollama and LM Studio.</li>
+</ul>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  You quantize a 70B model from FP16 to 4-bit AWQ. The model is 4× smaller and 2× faster. But its performance on a math reasoning benchmark drops from 82% to 65%. What happened, and what's the mitigation?
+</div>
+
+<p>Math reasoning relies on precise numerical comparisons. A 4-bit representation might encode "5.1" and "5.3" as the same quantized value, and when the model is comparing two quantities to decide which is larger, that loss of precision produces wrong answers. The mitigation: use higher precision for the specific layers that handle numerical reasoning, or use mixed-precision quantization (like GGUF's K-quants) that assigns more bits to salient layers. Another approach: FP8 on H100/H200 GPUs — 8 bits preserves enough precision for math reasoning while still giving a 1.9× speedup over FP16. The general lesson: quantization quality loss isn't uniform across tasks. Code and math suffer most; creative writing and general chat suffer least. Quantize for your workload, not for the benchmark average.</p>
+
+<h2>Distillation: a smaller model learns from a larger one</h2>
+
+<p><span class="term">Knowledge distillation</span> is a different approach to the same problem. Instead of compressing an existing model, you train a smaller model to mimic a larger one. The large model (the <em>teacher</em>) generates outputs on a training dataset; the small model (the <em>student</em>) is trained to match not just the teacher's final answer, but the full probability distribution over tokens — the teacher's "reasoning process," encoded in which tokens it considered plausible and how confident it was in each.</p>
+
+<p>Distillation captures something quantization can't: the teacher's learned heuristics and reasoning patterns. A distilled 7B model trained on a 70B teacher's outputs can significantly outperform the 7B model trained on the same data directly. The catch: distillation requires access to the teacher model's full output distribution (not just the top token), which some API providers don't expose. And distillation doesn't reduce the model size as dramatically as quantization — you still need to choose the student architecture and train it, which is a multi-GPU job for a 7B model.</p>
+
+<p>The pragmatic combination in 2026: <strong>distill to get a smaller base model, then quantize that model for deployment.</strong> A distilled 7B model quantized to 4-bit AWQ fits in ~4 GB of VRAM, runs at 110+ tokens/second on an RTX 4090, and retains most of the teacher's quality on general tasks. This is the recipe behind most "small but capable" models on Hugging Face.</p>
+
+<div class="lens">
+  <span class="lens-tag">the quality floor</span>
+  Below 4 bits, quantization quality drops sharply. 3-bit and 2-bit quantization exist (and GGUF supports them), but the quality loss is severe — the model becomes incoherent on complex tasks. The current practical floor is 4 bits with mixed precision for salient layers. Research into sub-4-bit quantization is active (most models have significant redundancy), but as of mid-2026, 4-bit is the production standard. If you need smaller than 4-bit, look at distillation first — train a smaller model rather than crushing a larger one below its precision floor.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">Where quantized models run —</span> <span class="meta-line">model serving: batch vs online</span> covers the infrastructure choices that determine whether quantization's speed gains actually translate to lower latency for your users.</p>
+        <p class="thread"><span class="lead-in">The other efficiency play —</span> <span class="meta-line">HNSW</span> uses quantization for vector indexes, applying the same principles (compress vectors, tolerate small retrieval errors) to a different problem.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Quantization sits among model serving, HNSW, the transformer, and backprop">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">model serving</text>
+          </g>
+          <g class="node" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">HNSW</text>
+          </g>
+          <g class="node learned" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">transformers</text>
+          </g>
+          <g class="node learned" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">backprop</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">quantization</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><span class="meta-line">Model serving · frontier</span></li>
+          <li><span class="meta-line">HNSW · frontier</span></li>
+          <li><a href="transformers.html">The transformer</a></li>
+          <li><a href="backprop.html">Backpropagation</a></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">ML Systems &amp; MLOps · efficiency</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

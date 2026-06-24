@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hexagonal / Ports &amp; Adapters — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Design &amp; Architecture</span><span class="dot"></span>
+      <span>patterns</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Hexagonal / Ports &amp; Adapters</h1>
+    <p class="standfirst">Keeping your business logic from caring whether it's behind HTTP or a CLI — and why the shape reminds you that there are always more sides than you think.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>Alistair Cockburn drew a hexagon in 2005 and accidentally created one of the most useful and most over-diagrammed ideas in software architecture. The hexagon isn't the point — Cockburn picked six sides because he wanted room to draw ports and didn't want people to think a rectangle implied exactly four. The architecture matters; the shape is a mnemonic.</p>
+
+<p>The idea: <strong>your application's core logic should have no knowledge of the outside world.</strong> Not HTTP. Not Postgres. Not Kafka. Not a CLI. The core knows about <em>ports</em> — interfaces that define what it needs and what it offers, in its own language. The outside world connects to those ports through <em>adapters</em> — concrete implementations that translate between the core's language and the outside technology's language.</p>
+
+<div class="pull">The core is pure. The adapters are the necessary impurity that lets the core interact with things that aren't pure.</div>
+
+<h2>Ports: the contract in the middle</h2>
+
+<p>A port is just an interface. It's defined in the core's language, using the core's types, and it says nothing about HTTP status codes, SQL dialects, or message formats. There are two kinds:</p>
+
+<ul>
+  <li><strong>Driving ports</strong> (primary): what the outside world calls to <em>drive</em> the application. "Create an order," "cancel a subscription," "get a user's balance." These are use cases, and they're defined as interfaces that the core <em>implements</em>.</li>
+
+  <li><strong>Driven ports</strong> (secondary): what the application calls to <em>get things done</em>. "Save this order," "send this notification," "look up this user's permissions." These are interfaces that the core <em>calls</em>, defined by the core, implemented by adapters.</li>
+</ul>
+
+<pre class="pre-label">The shape, in code
+// In the core (knows nothing about HTTP or Postgres):
+interface OrderRepository {          // ← driven port
+    fun save(order: Order): OrderId
+    fun findById(id: OrderId): Order?
+}
+
+interface NotificationService {      // ← driven port
+    fun notifyUser(userId: UserId, message: String)
+}
+
+class PlaceOrder(
+    private val orders: OrderRepository,
+    private val notify: NotificationService
+) {                                   // ← driving port (use case)
+    fun execute(userId: UserId, items: List<LineItem>): Order {
+        val order = Order.create(userId, items)
+        orders.save(order)
+        notify.notifyUser(userId, "Order ${order.id} placed")
+        return order
+    }
+}
+
+// In the adapter layer (knows about Postgres):
+class PostgresOrderRepository(db: DataSource) : OrderRepository {
+    override fun save(order: Order) = db.run("INSERT INTO orders ...")
+    override fun findById(id: OrderId) = db.run("SELECT ...")
+}
+
+// In the adapter layer (knows about HTTP):
+class OrderController(repo: OrderRepository, notify: NotificationService) {
+    @Post("/orders")
+    fun create(req: CreateOrderRequest): OrderResponse {
+        val useCase = PlaceOrder(repo, notify)
+        val order = useCase.execute(req.userId, req.items)
+        return OrderResponse.from(order)
+    }
+}</pre>
+
+<p>The core defines <code>OrderRepository</code> as an interface. Postgres is an implementation detail. If you want to switch to MongoDB, you write a <code>MongoOrderRepository</code> that implements the same interface. If you want to test <code>PlaceOrder</code>, you pass in an in-memory fake. The test doesn't start Postgres — it doesn't even know Postgres exists.</p>
+
+<h2>What this actually buys you</h2>
+
+<p>The hexagonal architecture is often sold as "so you can swap your database later." That's not wrong, but it's the least important benefit. Database swaps are rare. The real benefits are more subtle and more valuable:</p>
+
+<ol>
+  <li><strong>Testability without infrastructure.</strong> The core has no dependencies on frameworks, databases, or network services. You can test every business rule with plain unit tests that run in milliseconds. The adapters get integration tests (does this SQL query actually work against a real Postgres?), but those are fewer and focused on the integration boundary.</li>
+
+  <li><strong>Decisions you can defer.</strong> You can build the entire core — all the business logic, validation, and workflows — before deciding whether the API will be REST, gRPC, or GraphQL. The core doesn't care. The adapter choice is the last decision, not the first, and it's reversible without touching business logic.</li>
+
+  <li><strong>Boundaries that match the organization.</strong> A team that owns the core can move fast because changes to the core don't affect the HTTP adapter, and changes to the HTTP adapter don't affect the core. When the product team wants to add a CLI interface, they write a new adapter for the existing ports. The core team isn't involved.</li>
+
+  <li><strong>The framework becomes a plugin.</strong> Spring, Express, FastAPI — these are adapters. Your application doesn't depend on them; they depend on your application. This inverts the typical relationship where the framework owns <code>main()</code> and your code fills in the blanks. In a hexagonal architecture, <code>main()</code> is in your code, and the framework is wired in through adapters.</li>
+</ol>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  You've built a beautifully hexagonal app. The core has zero framework dependencies. The HTTP adapter is 200 lines. A new requirement arrives: this service needs to also accept commands via a Kafka topic. How much of the core needs to change?
+</div>
+
+<p>Nothing. Zero lines. You write a <span class="term">Kafka adapter</span> — a consumer that deserializes messages from the topic, calls the same <code>PlaceOrder.execute()</code> that the HTTP controller calls, and serializes the result (or publishes an event). The core's driving ports don't know or care whether the caller is an HTTP request or a Kafka message. This is the architecture paying rent: the cost you paid up front (defining ports, writing adapters) returns every time a new entry point or a new infrastructure dependency materializes. Without ports, the Kafka integration would be scattered through the codebase — parsing Kafka headers in the order service, mixing Kafka commit offsets with business logic, testing through an embedded Kafka broker.</p>
+
+<h2>The boundaries are real, and so is the overhead</h2>
+
+<div class="lens">
+  <span class="lens-tag">the real cost</span>
+  Ports and adapters add indirection. Every driven port is an interface with (initially) one implementation. If you have 47 driven ports, you have 47 interfaces that exist solely to enable a swap that may never happen. The overhead isn't the interface declaration (that's cheap); it's the cognitive load of navigating an extra layer every time you trace a call path. The pragmatic stance: apply the pattern at the boundaries that <em>actually change</em> or that you <em>actually need to test in isolation</em>. The database is worth abstracting. The filesystem is worth abstracting. An in-process calculation utility that's 30 lines and pure math? An interface for that is ceremony, not architecture.
+</div>
+
+<p>The hexagonal architecture is not a religion. It's a tool for managing <a href="coupling-cohesion.html">coupling</a> at the system boundary. When the boundary is between your code and something slow, external, or likely to change, a port is a bargain. When the boundary is between two functions in the same file, a port is overhead. The skill is knowing which boundaries matter.</p>
+
+<p>One more honest note: most "hexagonal" codebases in the wild are better described as "the database is behind an interface and we called it a repository." That's fine. That's 80% of the value for 20% of the ceremony. The full hexagon — driving ports, driven ports, adapters for every external system, the framework as a plugin — is for systems where the cost of getting a boundary wrong is high: payment processing, multi-tenant platforms, systems with a regulatory requirement to keep business logic auditable and separable from infrastructure. A blog engine doesn't need a hexagonal architecture. A payment system that processes millions of transactions across three cloud providers does.</p>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The principle hexagonal architecture depends on —</span> <a href="coupling-cohesion.html">coupling & cohesion</a> is the vocabulary for talking about <em>which</em> boundaries to draw and why some abstractions pay off while others rot.</p>
+        <p class="thread"><span class="lead-in">The pattern that makes ports pluggable —</span> <span class="meta-line">dependency injection</span> is the mechanical answer to "how do I get the right adapter into the core without the core knowing which one it is?"</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Hexagonal architecture sits among coupling, dependency injection, DDD, and SOLID">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">coupling</text>
+          </g>
+          <g class="node" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">DI</text>
+          </g>
+          <g class="node" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">DDD</text>
+          </g>
+          <g class="node" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">SOLID</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">hexagonal</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="coupling-cohesion.html">Coupling & cohesion</a></li>
+          <li><span class="meta-line">Dependency injection · frontier</span></li>
+          <li><span class="meta-line">DDD, the useful parts · frontier</span></li>
+          <li><span class="meta-line">SOLID, honestly · frontier</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Design &amp; Architecture · patterns</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

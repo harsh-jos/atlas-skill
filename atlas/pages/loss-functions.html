@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Loss Functions — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>AI / ML Foundations</span><span class="dot"></span>
+      <span>optimization</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Loss Functions</h1>
+    <p class="standfirst">The number a model is actually trying to make smaller — and why the choice of loss encodes everything you care about.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>A model doesn't "know" what you want. It knows what you measure. The loss function is the measurement — a single number that summarizes how badly the model is doing on the task you care about. <a href="gradient-descent.html">Gradient descent</a> minimizes it. <a href="backprop.html">Backpropagation</a> computes its gradient with respect to every weight. The loss function is the objective; everything else is the machinery to reach it.</p>
+
+<p>If the loss function is wrong, the model optimizes for the wrong thing. A classifier that minimizes classification error but ignores the cost of false negatives (missing a tumor) is optimizing the wrong objective. A language model that minimizes perplexity but produces toxic text is optimizing the wrong objective. The loss function is where your values enter the math — and choosing it well is the most consequential decision in the modeling pipeline.</p>
+
+<h2>The basic taxonomy</h2>
+
+<div class="pull">Regression asks "how far off?" Classification asks "how confident was the wrong answer?"</div>
+
+<p><strong>For regression</strong> (predicting a continuous value):</p>
+
+<ul>
+  <li><strong>MSE (Mean Squared Error):</strong> <code>(y_true − y_pred)²</code>. Penalizes large errors quadratically — a prediction off by 10 is 100× worse than a prediction off by 1. Best when large errors are genuinely much worse than small ones. Sensitive to outliers — one terrible prediction dominates the loss.</li>
+  <li><strong>MAE (Mean Absolute Error):</strong> <code>|y_true − y_pred|</code>. Penalizes errors linearly. More robust to outliers than MSE. Best when you care about the typical error, not the worst-case. The gradient is constant magnitude — doesn't get smaller as you approach the minimum, which can cause oscillation near convergence.</li>
+  <li><strong>Huber loss:</strong> Quadratic for small errors, linear for large errors. The best of both — MSE's smooth convergence near the minimum, MAE's outlier robustness far from it. Has a tunable delta parameter that sets the crossover point.</li>
+</ul>
+
+<p><strong>For classification</strong> (predicting a category):</p>
+
+<ul>
+  <li><strong>Cross-entropy (log loss):</strong> <code>−log(p_correct)</code>. If the model assigns 0.9 probability to the correct class, the loss is −log(0.9) ≈ 0.105. If it assigns 0.1, the loss is −log(0.1) ≈ 2.30. The logarithm means that confident wrong answers are punished severely. This is the standard loss for essentially all classification tasks — from logistic regression to GPT's next-token prediction.</li>
+  <li><strong>Binary cross-entropy:</strong> The two-class special case. For each example: <code>−[y·log(p) + (1−y)·log(1−p)]</code>. If the true label is 1 and the model predicts 0.99, the second term vanishes and loss is tiny. If it predicts 0.01, the loss is large. This is the loss behind every binary classifier.</li>
+</ul>
+
+<h2>Why cross-entropy won</h2>
+
+<p>Cross-entropy has a mathematical property that makes it the default choice: when combined with a softmax output layer, the gradient of the loss with respect to the logits simplifies to <code>p̂ − y</code> — predicted probability minus true label. This is stunningly clean. The gradient is just the error vector. No chain rule explosion, no vanishing terms, no numerical instability.</p>
+
+<p>MSE with a softmax, by contrast, produces a gradient that includes <code>p̂(1−p̂)</code> — which vanishes when the model is confident (p̂ ≈ 0 or p̂ ≈ 1). A confidently wrong model produces tiny gradients and stops learning. This is the <span class="term">vanishing gradient</span> problem, and it's why you should never use MSE for classification with softmax. The cross-entropy + softmax combination is not a convention — it's a derivation that avoids a known failure mode.</p>
+
+<h2>The LLM loss: next-token cross-entropy</h2>
+
+<p>When an <a href="transformers.html">LLM</a> trains, the loss at each position is the cross-entropy between the model's predicted probability distribution over the vocabulary and the actual next token (a one-hot distribution where the correct token has probability 1). The model's loss over a sequence is the average of these per-token losses:</p>
+
+<pre class="pre-label">Language model loss (next-token prediction)
+For each position i in the sequence:
+    loss_i = -log(P(token_{i+1} | tokens_{1..i}))
+Total loss = average(loss_i over all positions)</pre>
+
+<p>The <span class="term">perplexity</span> you see in model reports is <code>exp(total_loss)</code>. A perplexity of 10 means the model is, on average, as uncertain as if it were choosing uniformly from 10 equally likely tokens. Lower perplexity = better predictions. This single number — next-token cross-entropy averaged over a held-out corpus — is the objective that produced every major language model.</p>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  You're training a classifier to detect fraud (rare — 0.1% of transactions). You use standard cross-entropy loss. The model achieves 99.9% accuracy by predicting "not fraud" for every transaction. What's wrong, and what's the loss-function fix?
+</div>
+
+<p>The model learned that accuracy is optimized by ignoring the rare class. The fix is a <span class="term">weighted loss</span>: multiply the loss for fraud examples by a factor (e.g., 1000×) so that each fraud example contributes as much to the total loss as 1000 non-fraud examples. This forces the model to care about fraud detection. A more sophisticated fix is <span class="term">focal loss</span> (Lin et al., 2017): down-weight the loss for examples the model already classifies correctly, so the model focuses on the hard cases. In a fraud setting, the model quickly learns to classify non-fraud correctly, and focal loss automatically shifts the training signal to the fraud examples — without needing to manually set the class weight. The general principle: the loss function should encode the <em>cost of being wrong</em>, not just the <em>fact</em> of being wrong.</p>
+
+<div class="lens">
+  <span class="lens-tag">the RLHF twist</span>
+  The cross-entropy loss trains a model to mimic the training data. But "mimic the internet" is not the same as "be helpful, harmless, and honest." <span class="term">RLHF</span> (Reinforcement Learning from Human Feedback) replaces the loss function with a learned reward model that predicts human preferences. The model is no longer optimizing "predict the next token accurately" — it's optimizing "produce outputs that a human judge would rank highly." The loss function changes from a mathematical measure of prediction accuracy to a learned proxy for human values. This is why RLHF is philosophically interesting beyond its engineering details: it's the point where the objective stops being objective.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The optimizer that minimizes the loss —</span> <a href="gradient-descent.html">gradient descent</a> is the algorithm that takes the loss and computes how to update the weights. Read them together for the full training loop.</p>
+        <p class="thread"><span class="lead-in">The gradient computation —</span> <a href="backprop.html">backpropagation</a> is how the loss's derivative with respect to every weight is computed efficiently. Loss defines the objective; backprop computes the direction to move.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Loss functions sit among gradient descent, backprop, bias-variance, and RLHF">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">grad. descent</text>
+          </g>
+          <g class="node learned" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">backprop</text>
+          </g>
+          <g class="node" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">bias-variance</text>
+          </g>
+          <g class="node" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">RLHF</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">loss fns</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="gradient-descent.html">Gradient descent</a></li>
+          <li><a href="backprop.html">Backpropagation</a></li>
+          <li><span class="meta-line">Bias-variance tradeoff · frontier</span></li>
+          <li><span class="meta-line">RLHF & preference tuning · frontier</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">AI / ML Foundations · optimization</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

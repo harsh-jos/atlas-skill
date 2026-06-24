@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Attention — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Deep Learning</span><span class="dot"></span>
+      <span>architectures</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Attention</h1>
+    <p class="standfirst">The one mechanism that quietly ate machine learning — and the reason a model can look at "the bank" and know whether you mean money or a river.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>Before attention, sequence models had a bottleneck. An RNN processed a sentence one word at a time, compressing everything it had seen into a single hidden state vector. By the time it reached the end of a long sentence, the vector was a blur — the early words had been diluted by dozens of update steps. If the sentence was "The cat, which had been sitting on the mat since early morning, finally moved," the model had to connect "moved" back to "cat" across a 14-word gap. RNNs were bad at this.</p>
+
+<p>Attention removed the bottleneck by letting every position look directly at every other position. No compression, no forgetting. The model computes a weighted sum of all positions, where the weights are learned and depend on the specific input. For the word "moved," the model learns to assign high weight to "cat" and low weight to "morning" — not because a programmer wrote that rule, but because the training objective made it the optimal way to predict the next word.</p>
+
+<div class="pull">Attention is a learned lookup: "given what I've seen so far, which past positions matter right now?"</div>
+
+<h2>The mechanics: query, key, value</h2>
+
+<p>Attention operates on three matrices, all derived from the same input sequence:</p>
+
+<ul>
+  <li><strong>Query (Q):</strong> "What am I looking for?" — the current position's question.</li>
+  <li><strong>Key (K):</strong> "What do I contain?" — each position's label, used for matching.</li>
+  <li><strong>Value (V):</strong> "What do I contribute?" — each position's content, what gets aggregated.</li>
+</ul>
+
+<p>For each position, the model computes how well its query matches every position's key (via dot product), scales the result to keep gradients well-behaved, converts to probabilities with softmax, and uses those probabilities to take a weighted sum of the values:</p>
+
+<pre class="pre-label">Scaled dot-product attention
+Attention(Q, K, V) = softmax(QKᵀ / √dₖ) V
+
+Where: Q, K, V are matrices of size [seq_len × d]
+       QKᵀ produces [seq_len × seq_len] — every position's similarity to every other
+       softmax normalizes each row to sum to 1
+       Weighted sum of V gives the output</pre>
+
+<p>The division by √dₖ (where dₖ is the key dimension) is the <span class="term">scaling</span> that gives the mechanism its full name. Without it, large dot products push the softmax into the saturation region where gradients vanish — the model stops learning. It's a tiny numerical fix that turns out to be load-bearing.</p>
+
+<p>For a concrete example: in the sentence "The cat sat on the mat because it was comfortable," the word "it" needs to attend to "mat" (not "cat"). At the "it" position, the query vector (derived from "it") will have a high dot product with the key vector of "mat" (because the model learned that "it" after "because" often refers to the most recent inanimate object), producing a large attention weight that pulls the "mat" value vector into "it"'s output representation. The word "it" now contains a blend of its own meaning plus the knowledge that its referent is a mat.</p>
+
+<h2>Multi-head attention: looking from multiple angles</h2>
+
+<p>A single attention mechanism can only attend in one way. If the model is attending to "bank," it might focus on "river" (the location sense) or "money" (the financial sense), but not both simultaneously. <span class="term">Multi-head attention</span> solves this: run multiple attention operations in parallel, each with its own Q, K, V projections, each free to learn a different relationship.</p>
+
+<pre class="pre-label">Multi-head attention
+MultiHead(Q, K, V) = Concat(head₁, head₂, ..., headₕ) Wᴼ
+
+where headᵢ = Attention(QWᵢ^Q, KWᵢ^K, VWᵢ^V)</pre>
+
+<p>One head might learn to attend to syntactic parents (which noun does this adjective modify?). Another might learn positional relationships (what came right before this?). Another might learn semantic roles (who is the agent of this verb?). The heads specialize without being told what to specialize in — the specialization emerges from the training objective.</p>
+
+<p>In the original Transformer paper (Vaswani et al., 2017), <code>h = 8</code> heads and <code>dₖ = dᵥ = d_model/h = 64</code>. Modern large language models use 64–128 heads. The multi-head decomposition gives the model a richer vocabulary of relationships while keeping the per-head computation manageable.</p>
+
+<h2>Why attention won</h2>
+
+<p>Attention has three properties that RNNs and CNNs can't match simultaneously:</p>
+
+<ol>
+  <li><strong>Constant path length.</strong> Information flows from position i to position j in O(1) steps — one attention operation. In an RNN, it takes O(|i−j|) steps. Every step is an opportunity for information to degrade.</li>
+
+  <li><strong>Content-addressable.</strong> Attention weights depend on the data, not just the positions. An RNN's update rule is fixed regardless of input; attention's weights are computed from the specific Q and K vectors of this specific sequence.</li>
+
+  <li><strong>Parallelizable.</strong> Computing QKᵀ is a matrix multiply — the most optimized operation in computing. An RNN must process positions sequentially (the hidden state at time t depends on time t−1). Attention computes all positions simultaneously.</li>
+</ol>
+
+<p>There's a cost: attention's memory and compute scale as O(n²) with sequence length. For a 2048-token sequence, the attention matrix is 2048×2048 = 4 million entries. For 100K tokens, it's 10 billion entries — and that's per layer, per head. The O(n²) memory cost is why long-context models are an active research area, not a solved problem. FlashAttention (Dao et al., 2022) made the compute feasible by restructuring the computation to avoid materializing the full n×n matrix in GPU memory. Sparse and linear attention variants (Mamba, RWKV) challenge the "attention is all you need" premise by replacing the O(n²) softmax attention with state-space models — but as of 2026, the standard transformer with FlashAttention remains the dominant architecture.</p>
+
+<div class="lens">
+  <span class="lens-tag">the scaling wall</span>
+  Attention's O(n²) cost is not a theoretical curiosity — it's the reason your 1M-token-context model needs 8 GPUs to serve a single prompt. The industry's workarounds (FlashAttention, ring attention, paged attention for KV caches) are magnificent engineering but they're working around a fundamental scaling property. The linear-attention and state-space model camps are betting that O(n²) attention is a local maximum, not the final answer. They might be right. But for now, every frontier model ships with quadratic attention, and the engineering to make it fast is part of what you're paying for.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The architecture attention enables —</span> <span class="meta-line">the transformer</span> stacks attention layers with feed-forward layers to build the backbone of every modern LLM.</p>
+        <p class="thread"><span class="lead-in">The raw material attention operates on —</span> <span class="meta-line">embeddings</span> convert tokens into the vectors that become Q, K, and V at the first layer.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Attention sits among embeddings, the transformer, tokenization, and gradient descent">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">embeddings</text>
+          </g>
+          <g class="node" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">transformers</text>
+          </g>
+          <g class="node learned" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">tokenization</text>
+          </g>
+          <g class="node learned" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">grad. descent</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">attention</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="embeddings.html">Embeddings</a></li>
+          <li><span class="meta-line">The transformer · frontier</span></li>
+          <li><a href="tokenization.html">Tokenization & BPE</a></li>
+          <li><a href="gradient-descent.html">Gradient descent</a></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Deep Learning · architectures</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

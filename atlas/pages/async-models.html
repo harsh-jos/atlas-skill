@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Event Loops vs Threads vs Coroutines — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Concurrency &amp; Parallelism</span><span class="dot"></span>
+      <span>models</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Event Loops vs Threads vs Coroutines</h1>
+    <p class="standfirst">The three answers to "how do I wait for 10,000 things at once" — and why each of them is the right answer somewhere.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>You're writing a server that needs to handle 10,000 concurrent connections. Each connection spends most of its time waiting — for a database, for another service, for the client to send the next byte. Your CPU is bored. The question is: how do you structure the code so that waiting on one thing doesn't block the other 9,999?</p>
+
+<p>There are three families of answers. They all solve the same problem — multiplexing many tasks onto few OS threads — but they differ radically in what your code looks like and where the pain lives.</p>
+
+<h2>Threads: one task, one OS thread</h2>
+
+<p>The simplest model: spawn a thread per connection. Each thread runs synchronous, linear code. You call <code>read()</code>, it blocks, the OS puts the thread to sleep, and when data arrives the OS wakes it up and your code continues from the next line. The code is easy to write because it looks like normal sequential code.</p>
+
+<p>The problem is scale. Each OS thread costs about 1 MB of stack space (on Linux, by default) and takes microseconds to context-switch. At 10,000 threads, that's 10 GB of stack alone, plus the scheduler overhead of managing them all. The kernel wasn't designed to juggle tens of thousands of mostly-idle threads.</p>
+
+<p>This worked fine in the 1990s, when "concurrent" meant a hundred connections. It falls apart at modern scale. But the <em>programming model</em> — write synchronous code, let the runtime handle the waiting — is so compelling that both of the other approaches have been trying to get back to it ever since.</p>
+
+<h2>The event loop: one thread, many callbacks</h2>
+
+<p>The event loop inverts control: instead of a thread waiting on its own connection, a single thread monitors all connections and dispatches events to callbacks. Node.js, nginx, Redis, and the classic Python <code>asyncio</code> all work this way.</p>
+
+<pre class="pre-label">The event loop, conceptually
+while (running) {
+    events = poll(all_open_sockets)    // "tell me which ones are ready"
+    for (sock : events.readable) {
+        sock.read_callback(sock)       // dispatch to registered handler
+    }
+    for (sock : events.writable) {
+        sock.write_callback(sock)
+    }
+}</pre>
+
+<p>The kernel provides the magic: <code>epoll</code> (Linux), <code>kqueue</code> (macOS/BSD), or <code>IOCP</code> (Windows) lets a single thread efficiently wait on thousands of file descriptors. The thread blocks in <code>epoll_wait()</code>, not in individual <code>read()</code> calls. When data arrives on socket 247, the kernel wakes the thread, and the event loop calls socket 247's registered callback.</p>
+
+<div class="lens">
+  <span class="lens-tag">the cost</span>
+  You've traded thread stacks for callback chains. A simple sequence — read request, parse JSON, query database, write response — becomes a pyramid of nested callbacks (or a flat but still fragmented chain of promises/await). The stack trace you'd normally use to debug is gone, because each callback runs in a fresh frame on the event loop's single thread. And a single CPU-heavy callback blocks the entire loop — every other connection stalls until it finishes.
+</div>
+
+<h2>Coroutines: let the compiler do the callbacks</h2>
+
+<p>Coroutines (also called green threads, fibers, or virtual threads) steal the best property of threads — write linear code — and implement it without OS threads. The trick is <em>cooperative</em> scheduling: a coroutine runs until it explicitly yields (at an I/O boundary), at which point the runtime switches to another coroutine on the same OS thread.</p>
+
+<p>This is what Go's <code>goroutine</code>, Kotlin's <code>suspend</code>, Rust's <code>async fn</code>, and Python's <code>async/await</code> all do. The key difference is <em>who</em> implements the state machine:</p>
+
+<ol>
+  <li><strong>Stackful coroutines (goroutines, virtual threads).</strong> The runtime manages a growable stack per coroutine. When a goroutine blocks on a channel or I/O, the Go runtime saves its stack and switches to another goroutine — all on the same OS thread. The code looks synchronous. You write <code>data, err := conn.Read(b)</code> and it just works. The Go runtime uses a work-stealing scheduler that maps M goroutines onto N OS threads, preempting at function calls and (since Go 1.14) loop backs-edges.</li>
+
+  <li><strong>Stackless coroutines (async/await).</strong> The compiler transforms an <code>async fn</code> into a state machine. Each <code>.await</code> point becomes a state transition. There's no separate stack — the coroutine's live variables are stored in a struct the compiler generates. This is lighter-weight (no stack allocation) but splits your code into two worlds: async functions can only be called from other async functions (the "colored function" problem), and the state-machine transform means the compiler needs to see the whole async chain.</li>
+</ol>
+
+<p>The battle between these two is interesting and still active:</p>
+
+<table>
+  <tr><th>Approach</th><th>Examples</th><th>Stack per task</th><th>Two-color world?</th><th>Scheduling</th></tr>
+  <tr>
+    <td>Stackful</td>
+    <td>Go goroutines, Java virtual threads, Erlang processes</td>
+    <td>~2 KB start, grows</td>
+    <td>No — any function can block</td>
+    <td>Runtime preempts</td>
+  </tr>
+  <tr>
+    <td>Stackless</td>
+    <td>Rust async/await, Python asyncio, JS async/await, C++ coroutines</td>
+    <td>Fixed struct (compile-time)</td>
+    <td>Yes — async fns can't call sync blocking fns</td>
+    <td>Cooperative (yields at .await)</td>
+  </tr>
+</table>
+
+<p>Java's virtual threads (Project Loom, stable since JDK 21 in 2023) are a fascinating data point: they're stackful coroutines that <em>retrofit</em> the thread model. Existing synchronous Java code that uses <code>Thread.sleep()</code> or blocking I/O gets the scalability of the event-loop model <em>without rewriting to callbacks or async/await</em>. The JVM intercepts blocking calls and parks the virtual thread, freeing the underlying OS thread (called a "carrier thread") to run another virtual thread. As of 2025, adoption has been pragmatic: teams use them for I/O-bound server work where rewriting to reactive streams would be prohibitively expensive, but they're not a universal replacement for platform threads in CPU-bound or latency-sensitive contexts.</p>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  A Rust async function spawns 100 concurrent tasks on a single-threaded Tokio runtime. One of those tasks calls <code>std::thread::sleep(Duration::from_secs(10))</code> instead of <code>tokio::time::sleep(...)</code>. What happens to the other 99 tasks during those ten seconds?
+</div>
+
+<p>They freeze. Completely. <code>std::thread::sleep</code> blocks the OS thread, and since there's only one OS thread, the runtime can't poll any other task. The async state machine only yields at <code>.await</code> points — regular blocking calls bypass the runtime entirely. This is the sharp edge of the stackless model: you must never block the thread inside an async context. Rust catches some of this at compile time (you can't hold a mutex guard across <code>.await</code>), but calling a blocking OS function slips through. Go and Java don't have this problem — the runtime intercepts the blocking call and switches goroutines/virtual threads transparently.</p>
+
+<h2>Which one do you use?</h2>
+
+<p>The choice is partly technical and partly cultural, and it keeps rearranging as runtimes mature:</p>
+
+<ul>
+  <li><strong>Go:</strong> goroutines are the idiomatic answer for everything. The runtime makes the stackful model work so well that you rarely think about the distinction. The cost is the GC and the runtime's opinion about how you structure your program.</li>
+
+  <li><strong>Rust:</strong> Tokio is the dominant async runtime (it's to Rust async what the standard library is to Rust sync). The stackless model gives zero-cost abstractions — no allocation per task, no GC — at the cost of the colored-function split. Worth it when you need C-like performance with high concurrency.</li>
+
+  <li><strong>Java:</strong> virtual threads are steadily replacing reactive frameworks (like Project Reactor and RxJava) for I/O-bound work. The pitch: "your synchronous Spring controller now scales to 10K concurrent requests with no code changes." In 2026, structured concurrency (JEP 480, stable in JDK 24) adds a scoped lifecycle to virtual threads, so a parent thread can't exit until all its children finish — fixing one of the classic sharp edges of thread-per-task models.</li>
+
+  <li><strong>Python:</strong> <code>asyncio</code> is the standard, but it suffers from the two-color problem acutely — any synchronous library call blocks the event loop. Python's GIL limits parallelism anyway, so the practical answer for CPU-bound work is multiprocessing, not threading or async.</li>
+
+  <li><strong>JavaScript/Node:</strong> the event loop with <code>async/await</code> (which is syntactic sugar over Promises, which are syntactic sugar over callbacks). Single-threaded by design; offload CPU work to worker threads.</li>
+</ul>
+
+<div class="lens">
+  <span class="lens-tag">the real trade</span>
+  The stackful vs stackless debate isn't really about stacks. It's about who pays the cost of the abstraction. Stackful runtimes pay at runtime (growable stacks, GC pressure, runtime scheduler overhead). Stackless compilers pay at compile time (state machine transform, colored functions, async propagation through the whole call graph). The right choice is the one where the cost falls on the axis you have more slack on: if you have runtime headroom, go stackful; if you need every cycle to count and can tolerate the compiler's discipline, go stackless.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The concurrency model that rejected shared memory entirely —</span> the <span class="meta-line">actor model</span> (Erlang, Akka) turns concurrency into mailboxes and messages.</p>
+        <p class="thread"><span class="lead-in">Where the pressure goes when work piles up —</span> <a href="backpressure.html">backpressure</a> is what happens when your beautifully concurrent system faces more work than it can handle.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Async models sit among backpressure, the actor model, queues, and reactive streams">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="44"  y2="132"/>
+          <line class="edge active" x1="140" y1="92" x2="236" y2="132"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">backpressure</text>
+          </g>
+          <g class="node learned" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">queues</text>
+          </g>
+          <g class="node" transform="translate(44,132)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">actor model</text>
+          </g>
+          <g class="node" transform="translate(236,132)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">reactive streams</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">async models</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="backpressure.html">Backpressure</a></li>
+          <li><a href="queues.html">Queues as a design tool</a></li>
+          <li><span class="meta-line">Actor model · frontier</span></li>
+          <li><span class="meta-line">Reactive streams · frontier</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Concurrency &amp; Parallelism · models</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

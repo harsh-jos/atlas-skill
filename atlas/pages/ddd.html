@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Domain-Driven Design, the Useful Parts — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Design &amp; Architecture</span><span class="dot"></span>
+      <span>modeling</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Domain-Driven Design, the Useful Parts</h1>
+    <p class="standfirst">Bounded contexts and ubiquitous language, minus the 600-page book — the DDD concepts that actually change how you write software.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>Eric Evans' <em>Domain-Driven Design</em> (2003) is 560 pages. Most engineers who say they "do DDD" mean they use a subset of about four ideas from it, and that subset is genuinely useful. The rest of the book is tactics for pre-framework Java enterprise architecture that you don't need unless you're building a monolith in 2004.</p>
+
+<p>The useful subset: <strong>ubiquitous language</strong>, <strong>bounded contexts</strong>, <strong>aggregates</strong>, and <strong>domain events</strong>. These four ideas solve a real problem: keeping the code's model of the world aligned with the business's model of the world, across teams and over time.</p>
+
+<h2>Ubiquitous language: name things the way the business names them</h2>
+
+<div class="pull">If the business says "policy" and the code says "InsuranceContract," one of you is translating on every conversation. Stop translating.</div>
+
+<p>The most impactful DDD practice is the simplest: use the business's words in the code. Not "close enough" translations. The exact words. If the domain expert says "a shipment is manifested, not created," your code should have a <code>manifest()</code> method, not a <code>create()</code> method. If they distinguish between a "lead" and a "prospect," those should be different types, not different statuses on a single type.</p>
+
+<p>This sounds trivial. It's not. The gap between "what the business asked for" and "what engineering built" is often traceable to a single translation error — a term that meant one thing to the product manager and another thing to the engineer. Ubiquitous language closes that gap by making the code <em>literally</em> speak the business's language. When a domain expert reads your class names, they should recognize them as concepts they use daily.</p>
+
+<h2>Bounded contexts: the most important DDD concept, period</h2>
+
+<p>A <span class="term">bounded context</span> is a boundary within which a term has a single, unambiguous meaning. Outside that boundary, the same term might mean something different — and that's not a bug, it's the design.</p>
+
+<p>The classic example: "Customer" means different things to different parts of the business. To sales, a Customer is a person in a CRM with a pipeline stage. To billing, a Customer is an entity with a payment method and an account balance. To support, a Customer is a person with a ticket history and an SLA tier. If you try to build one <code>Customer</code> class that serves all three, you get a 200-field monster where most fields are null in most contexts, and a change for the sales team breaks billing's queries.</p>
+
+<p>DDD's answer: <strong>let each context have its own Customer.</strong> <code>SalesCustomer</code>, <code>BillingCustomer</code>, <code>SupportCustomer</code>. They might share an ID. They might be populated from the same source events. But they are separate types with separate schemas, and a change to one doesn't affect the others. Translation happens at the boundary — when data crosses from one context to another, it's explicitly mapped.</p>
+
+<p>This is also how microservices should be split. A bounded context is the right boundary for a service — not a database table, not a REST resource, not a team's preferred language. The context boundary is where the language changes. Split services along language boundaries, and the organizational boundaries (teams own contexts) naturally align with the code boundaries (contexts are deployable units).</p>
+
+<h2>Aggregates: the unit of consistency</h2>
+
+<p>An <span class="term">aggregate</span> is a cluster of objects that are treated as a single unit for data changes. Exactly one entity in the cluster is the <span class="term">aggregate root</span> — the only entity that external code can reference. All changes to objects inside the aggregate go through the root.</p>
+
+<p>The rule: <strong>one aggregate = one transaction.</strong> You don't modify two aggregates in one database transaction. If two things need to be modified together, they belong in the same aggregate. If they belong in different aggregates, they're modified in separate transactions, and you accept eventual consistency between them.</p>
+
+<p>This is the DDD concept that most directly shapes your database schema and your API design. An aggregate that's too large (an entire Order containing LineItems, Customer, Payment, and Shipment) causes contention — two operations that touch different parts of the order block each other. An aggregate that's too small (each LineItem as its own aggregate) can't enforce invariants across line items (e.g., "an order must have at least one line item"). Sizing aggregates correctly is the hardest DDD skill and the one that most determines whether your system is performant under concurrent load.</p>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  You're modeling an e-commerce system. An Order contains LineItems, a ShippingAddress, and a Payment. Should Payment be part of the Order aggregate, or a separate aggregate referenced by ID? What's the invariant that decides?
+</div>
+
+<p>If the rule is "an order can only be placed when payment is confirmed," Payment might need to be part of the Order aggregate — the invariant spans both. But if payment can happen separately (e.g., pay later, partial payments, payment retries), Payment should be a separate aggregate referenced by ID from the Order. The deciding question: <strong>does a change to Payment require the Order to be locked?</strong> If yes, they're the same aggregate. If no, separate them. Most e-commerce systems separate them, because payment processing is slow, retryable, and shouldn't block modifications to the order (like adding items or changing the shipping address during a payment retry).</p>
+
+<div class="lens">
+  <span class="lens-tag">what to skip</span>
+  The DDD book's tactical patterns — repositories, factories, value objects, domain services, application services, specification pattern — are useful vocabulary but not the point. The point is the strategic design: bounded contexts and ubiquitous language. If you get the context boundaries right and name things consistently, the tactical patterns emerge naturally. If you focus on the tactical patterns without the strategic design, you get a beautifully factored monolith that models the wrong thing.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The architecture pattern DDD often pairs with —</span> <a href="event-sourcing.html">event sourcing & CQRS</a> is the natural persistence strategy for systems organized around domain events and aggregates.</p>
+        <p class="thread"><span class="lead-in">Ports & adapters for your contexts —</span> <a href="hexagonal.html">hexagonal architecture</a> is how you keep the domain model pure by pushing infrastructure concerns to the boundaries.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: DDD sits among event sourcing, hexagonal, coupling, and the saga pattern">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">event src.</text>
+          </g>
+          <g class="node learned" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">hexagonal</text>
+          </g>
+          <g class="node learned" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">coupling</text>
+          </g>
+          <g class="node" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">saga</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">DDD</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="event-sourcing.html">Event sourcing & CQRS</a></li>
+          <li><a href="hexagonal.html">Hexagonal / ports & adapters</a></li>
+          <li><a href="coupling-cohesion.html">Coupling & cohesion</a></li>
+          <li><span class="meta-line">The saga pattern · frontier</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Design &amp; Architecture · modeling</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

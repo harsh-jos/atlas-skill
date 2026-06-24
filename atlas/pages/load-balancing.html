@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Load Balancing Strategies — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Networking &amp; Protocols</span><span class="dot"></span>
+      <span>infrastructure</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Load Balancing Strategies</h1>
+    <p class="standfirst">Round-robin is the boring answer; here's what real traffic needs — from Layer 4 to Layer 7, from random to consistent hashing.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>A load balancer sits between clients and servers, deciding which server handles each request. The simplest algorithm — round-robin, each server in turn — works beautifully when all servers are identical and all requests cost the same. In production, neither condition holds. Servers have different capacities, requests have different costs, and connections have state (a user's session lives on a specific server). The algorithm choice determines whether your load is actually balanced or just evenly distributed across a fundamentally uneven system.</p>
+
+<h2>The algorithm ladder</h2>
+
+<p><strong>Round-robin / random:</strong> Each request goes to the next server in sequence (or a random one). O(1), stateless, perfectly fair when servers are identical. The default in most load balancers. Breaks when: servers have different capacities, requests have sticky state (user sessions), or request costs vary widely (one slow request blocks the server's queue while fast requests pile up).</p>
+
+<p><strong>Weighted round-robin:</strong> Give each server a weight proportional to its capacity. A server with weight 3 gets 3× the requests of a server with weight 1. Handles heterogeneous hardware (some servers are bigger). Still doesn't account for request cost variation — a server might get 3× the light requests and 3× the heavy ones, and the weights smooth the average but not the tail.</p>
+
+<p><strong>Least connections:</strong> Send each request to the server with the fewest active connections. A proxy metric for "which server is least busy right now." Better than round-robin when request costs vary — a server handling a slow request will accumulate connections and receive fewer new ones. The most common algorithm beyond round-robin in production load balancers (nginx, HAProxy, AWS ALB).</p>
+
+<p><strong>Least response time:</strong> Track each server's recent response time. Send requests to the fastest-responding server. Adapts to degradation — if a server slows down (GC pause, disk I/O), its response time rises and it receives less traffic. More sensitive than least connections (which only counts in-flight requests, not their cost).</p>
+
+<div class="pull">Least connections is about "which server has the shortest queue." Least response time is about "which server is actually processing fastest." Queue depth and processing speed are different metrics.</div>
+
+<p><strong>Consistent hashing:</strong> Hash the request (by client IP, session ID, or request key) to a point on a ring. Each server owns a range of the ring. When a server is added or removed, only the keys in its range are reassigned — the rest stay where they were. This minimizes disruption during scaling events, which is why <a href="consistent-hashing.html">consistent hashing</a> is used for distributed caches and stateful services. If a cache server dies, only the keys that hashed to it are lost from cache; the rest remain cached on their existing servers.</p>
+
+<h2>Layer 4 vs Layer 7</h2>
+
+<p>Load balancing happens at two layers, and the difference is what information the balancer uses to decide:</p>
+
+<ul>
+  <li><strong>Layer 4 (TCP/UDP):</strong> The balancer sees IP addresses and ports. It can route based on source/destination IP, but can't inspect HTTP headers, cookies, or URL paths. Fast (no payload inspection), transparent to TLS. Used for non-HTTP protocols and as the first hop before an L7 balancer.</li>
+
+  <li><strong>Layer 7 (HTTP/HTTPS):</strong> The balancer terminates TLS and inspects HTTP headers. It can route based on URL path (<code>/api/*</code> → API servers, <code>/static/*</code> → CDN), Host header (multi-tenant routing), cookies (sticky sessions), or any HTTP header. Slower (must decrypt and parse HTTP), but smarter. The standard for web applications.</li>
+</ul>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  You're using least-connections load balancing with 5 backend servers. Server 3 starts returning 500 errors for every request. The other 4 servers are healthy. What does the load balancer do, and what should it do?
+</div>
+
+<p>Least connections continues sending traffic to server 3 — it has few active connections (because it returns 500s quickly, completing the connection), so it looks like the least-busy server. The load balancer is optimizing for queue depth, not success rate. The fix: <span class="term">health checks</span> — the load balancer periodically probes each backend's health endpoint, and servers that fail health checks are removed from the pool. A passive health check (observing error rates and ejecting unhealthy servers) catches errors faster than an active health check, at the cost of potentially ejecting a server that's returning errors for a specific client rather than being generally unhealthy. Most production load balancers combine both: active health checks (probe <code>/health</code> every N seconds) and passive health checks (if a server's error rate exceeds a threshold, eject it temporarily).</p>
+
+<div class="lens">
+  <span class="lens-tag">the state problem</span>
+  Load balancing stateless services (API servers) is straightforward. Load balancing stateful services (applications with server-side sessions, WebSocket connections, stateful game servers) requires sticky sessions — the load balancer must route the same user to the same backend consistently. Sticky sessions break the "any server can handle any request" property that makes horizontal scaling work, and they create hotspots (one user's traffic is expensive, and their server bears it all). The fix: push state out of the application servers and into a shared store (Redis, database). The load balancer distributes requests freely; the application fetches state from the shared store on each request. The load balancer's job gets simpler; the application's job gets more network-dependent.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The hashing algorithm for stateful routing —</span> <a href="consistent-hashing.html">consistent hashing</a> minimizes disruption when servers join or leave. The load balancer's most important algorithm for stateful services.</p>
+        <p class="thread"><span class="lead-in">The circuit that protects overloaded backends —</span> <a href="circuit-breaker.html">circuit breakers</a> work alongside load balancers: the load balancer distributes traffic; the circuit breaker stops sending it when the backend fails.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Load balancing sits among consistent hashing, circuit breakers, DNS, and TCP">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">consistent hash</text>
+          </g>
+          <g class="node learned" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">circuit breaker</text>
+          </g>
+          <g class="node learned" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">DNS</text>
+          </g>
+          <g class="node learned" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">TCP</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">load bal.</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="consistent-hashing.html">Consistent hashing</a></li>
+          <li><a href="circuit-breaker.html">Circuit breakers</a></li>
+          <li><a href="dns-deep.html">DNS is a distributed database</a></li>
+          <li><a href="tcp-deep.html">TCP, past the handshake</a></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Networking &amp; Protocols · infrastructure</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

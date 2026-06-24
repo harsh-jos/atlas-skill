@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Locks, Deadlock &amp; Livelock — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Concurrency &amp; Parallelism</span><span class="dot"></span>
+      <span>synchronization</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Locks, Deadlock &amp; Livelock</h1>
+    <p class="standfirst">The cost of mutual exclusion and the classic ways it goes wrong — from the dining philosophers to your production database.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>A <a href="race-conditions.html">race condition</a> happens when two threads touch the same data without coordination. The simplest coordination is a lock: before accessing shared state, acquire the lock. After modifying it, release the lock. While one thread holds the lock, any other thread that tries to acquire it blocks until the holder releases. This is <span class="term">mutual exclusion</span> — the fundamental primitive that every other concurrency tool builds on.</p>
+
+<p>Locks solve one problem and create three new ones. The three new ones — deadlock, livelock, and contention — have killed more production systems than race conditions ever did. A race condition is a needle in a haystack. A deadlock is the haystack catching fire.</p>
+
+<h2>Mutexes, spinlocks, and the cost of waiting</h2>
+
+<p>When a thread can't acquire a lock, it has two choices:</p>
+
+<ul>
+  <li><strong>Block (mutex):</strong> The OS deschedules the thread. It goes to sleep. When the lock is released and the thread is next in line, the OS wakes it. The cost: a context switch (~microseconds). Best when the expected wait time is longer than the context switch cost.</li>
+
+  <li><strong>Spin (spinlock):</strong> The thread stays on the CPU and repeatedly checks the lock in a tight loop. No context switch, but the CPU burns cycles doing nothing useful. Best when the expected wait time is shorter than a context switch — i.e., the critical section is a few instructions long. Spinlocks are the building block inside OS kernels and database internals; you rarely write one in application code.</li>
+</ul>
+
+<div class="pull">A mutex is a "please wake me when it's my turn." A spinlock is "it'll be free in a nanosecond, I'll just wait here."</div>
+
+<p>Application-level mutexes (Rust's <code>std::sync::Mutex</code>, Go's <code>sync.Mutex</code>, Java's <code>ReentrantLock</code>) are almost always the right choice. They're fast enough for most critical sections, they don't burn CPU, and they compose with the language's concurrency primitives. Spinlocks are for when you're writing an async runtime or a database buffer pool manager — code where the critical section is a few atomic operations and the cost of descheduling exceeds the cost of spinning.</p>
+
+<h2>Deadlock: the circular wait</h2>
+
+<p>Thread A holds lock 1 and waits for lock 2. Thread B holds lock 2 and waits for lock 1. Neither can make progress. Both are deadlocked. The four necessary conditions (the Coffman conditions): mutual exclusion, hold-and-wait, no preemption, circular wait. Break any one and deadlock is impossible.</p>
+
+<pre class="pre-label">Deadlock in four lines
+// Thread A:           // Thread B:
+lock(mu1);              lock(mu2);
+lock(mu2);  // waits    lock(mu1);  // waits
+// ...                  // ...</pre>
+
+<p>The practical prevention, applied in every production codebase: <strong>always acquire locks in a consistent global order.</strong> If every code path that needs mu1 and mu2 acquires mu1 first, you can't form a cycle. This is why lock ordering is the first thing a deadlock postmortem examines — and why adding a new lock to a system is a higher-stakes change than adding a new function.</p>
+
+<p>Databases detect deadlocks by building a <span class="term">waits-for graph</span> (nodes are transactions, edges are "X is waiting for a lock held by Y") and periodically checking for cycles. If a cycle is found, the database picks a victim — typically the transaction that has done the least work — and aborts it. The application receives a deadlock error and is expected to retry. Postgres, MySQL/InnoDB, and SQL Server all do this automatically. It's expensive (the detector runs every deadlock_timeout ms) but safer than trusting application code to never produce a cycle.</p>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  A philosopher picks up the fork on her left. Before she can pick up the fork on her right, you preempt her — take the left fork away — and let another philosopher try. Does this prevent deadlock? What's the new failure mode you just introduced?
+</div>
+
+<p>Yes, breaking the "no preemption" condition prevents deadlock. The new failure mode is <span class="term">livelock</span>: every philosopher picks up the left fork, gets preempted, puts it down, tries again, gets preempted again. The system is making progress in the sense that the CPU is busy and threads are running, but no philosopher ever eats. This is livelock — the system is alive (processes are running) but no useful work gets done. The fix is randomization: each philosopher waits a random amount of time before retrying, so eventually one completes the full acquire before anyone else tries. This is <span class="term">exponential backoff</span> — the same pattern used in Ethernet (CSMA/CD) and every retry-based system since.</p>
+
+<h2>Reader-writer locks: the concurrency cheat</h2>
+
+<p>If most of your operations are reads, a plain mutex is wasteful — readers don't conflict with each other, only with writers. A <span class="term">reader-writer lock</span> (RwLock) lets multiple readers hold the lock simultaneously, but writers need exclusive access. The standard implementation: readers increment a shared counter (atomically); writers wait for the counter to hit zero, then set an exclusive flag.</p>
+
+<p>The pitfall: under heavy read traffic, writers can starve. If readers keep arriving while a writer is waiting, the counter never hits zero, and the writer waits indefinitely. The fix is <span class="term">write-preferring</span> (block new readers while a writer is waiting) or fair queuing. Most language standard libraries default to OS-level fairness, but the details vary. Go's <code>sync.RWMutex</code> is write-preferring as of Go 1.19.</p>
+
+<div class="lens">
+  <span class="lens-tag">the real cost</span>
+  Locks don't just cause deadlocks. They cause <span class="term">contention</span> — the hidden tax of serializing parallel work. If 8 threads need the same mutex, 7 of them are waiting at any moment. Your 8-core machine is effectively single-core for that critical section. The fix isn't a better lock — it's reducing the critical section (do the minimum necessary under the lock, compute everything else outside it), sharding the lock (one mutex per hash bucket, not one mutex for the whole map), or avoiding shared state entirely (message passing, copy-on-write). A lock that's contended is a design smell, not a performance problem to tune around.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The foundation —</span> <a href="race-conditions.html">race conditions & memory models</a> explains why you need locks in the first place and what the hardware is doing behind them.</p>
+        <p class="thread"><span class="lead-in">Going further —</span> <span class="meta-line">atomics & lock-free programming</span> covers how to coordinate threads without ever taking a lock, using the hardware's native compare-and-swap.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Locks sit among race conditions, atomics, MVCC, and the actor model">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">race cond.</text>
+          </g>
+          <g class="node" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">atomics</text>
+          </g>
+          <g class="node learned" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">MVCC</text>
+          </g>
+          <g class="node" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">actor model</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">locks</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="race-conditions.html">Race conditions & memory models</a></li>
+          <li><span class="meta-line">Atomics & lock-free · frontier</span></li>
+          <li><a href="mvcc.html">MVCC</a></li>
+          <li><span class="meta-line">The actor model · frontier</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Concurrency &amp; Parallelism · synchronization</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

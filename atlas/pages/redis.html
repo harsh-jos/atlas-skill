@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Redis Beyond the Cache — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Data &amp; Storage</span><span class="dot"></span>
+      <span>in-memory</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Redis Beyond the Cache</h1>
+    <p class="standfirst">It's a cache until you realize it's also a queue, a lock, a log, a rate limiter, a pub-sub bus, and occasionally a database — with an operational model to match.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>Redis is introduced as "an in-memory key-value store." This is technically accurate in the same way that "a smartphone makes phone calls." The key-value store is the foundation. The data structures on top — lists, sets, sorted sets, hashes, streams, geospatial indexes, bitmaps, and HyperLogLog sketches — make Redis the most versatile tool in infrastructure. Every production system eventually grows a Redis instance (or ten), and understanding its full surface area is the difference between using it well and reinventing it poorly.</p>
+
+<h2>The data structures that make it dangerous</h2>
+
+<div class="pull">Redis isn't powerful because it's fast. It's powerful because its data structures are the right abstractions for the problems distributed systems actually have.</div>
+
+<ul>
+  <li><strong>Lists (blocking ops: BLPOP, BRPOP):</strong> A reliable work queue in three commands. <code>LPUSH queue task</code> + <code>BRPOP queue 0</code> = a blocking consumer. Multiple consumers: the list is partitioned across consumers (each task goes to one consumer). Not a message broker (no acks, no redelivery), but good enough for background job processing. Used by Sidekiq, Celery, and Bull.</li>
+
+  <li><strong>Sorted sets (ZADD, ZRANGEBYSCORE):</strong> A leaderboard in one data structure. <code>ZADD leaderboard 1000 player1</code>. <code>ZREVRANGE leaderboard 0 9</code> — top 10. <code>ZRANK leaderboard player1</code> — your position. Sorted sets are also the implementation behind Redis's delayed task queues (score = execution timestamp, consumer polls <code>ZRANGEBYSCORE 0 NOW</code>).</li>
+
+  <li><strong>Hashes (HSET, HGET, HGETALL):</strong> A row in a database. <code>HSET user:42 name "Alice" email "a@b.com"</code>. <code>HGET user:42 email</code>. Hashes are memory-efficient for small field counts; Redis can store millions of small hashes in less memory than the equivalent JSON strings.</li>
+
+  <li><strong>Streams (XADD, XREAD, XREADGROUP):</strong> The Kafka-lite data structure (added in Redis 5.0, 2018). Append-only log with consumer groups, acknowledgments, and pending message tracking. Not Kafka (no partitioning, in-memory by default), but for moderate-throughput event streams, it's operationally trivial compared to running a Kafka cluster.</li>
+
+  <li><strong>Pub/Sub (PUBLISH, SUBSCRIBE):</strong> Fire-and-forget messaging. No persistence, no acks, no consumer groups. Publishers fire; subscribers who are connected receive; subscribers who are offline miss the message. Good for real-time notifications (WebSocket fan-out), bad for anything that needs delivery guarantees.</li>
+
+  <li><strong>Lua scripting (EVAL):</strong> Atomic execution of multi-step operations. A <a href="rate-limiting.html">token bucket rate limiter</a> in 20 lines of Lua, running atomically inside Redis. The script has access to Redis commands and runs without interruption — no race conditions between the read and the write.</li>
+</ul>
+
+<h2>The operational model (and the sharp edges)</h2>
+
+<p>Redis is single-threaded for command execution. This is its superpower — no locks, no contention, every command is atomic — and its constraint. One slow command (a <code>KEYS *</code> on a million-key database, an <code>SUNION</code> on large sets) blocks everything else. The fix: use <code>SCAN</code> instead of <code>KEYS</code>, avoid O(N) operations on large data structures in production, and monitor slowlog religiously.</p>
+
+<p>Persistence is optional and configurable: RDB snapshots (point-in-time dumps, good for backup), AOF (append-only file, good for durability — replay on restart), or both. AOF with <code>fsync=everysec</code> is the standard durability configuration: lose up to 1 second of writes on crash, but normal operations are not waiting on disk. This is a <a href="write-ahead-log.html">WAL</a> by another name.</p>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  You use Redis as a session store. A server goes down. Redis, on the same machine, goes down with it. The AOF file is corrupted. What's the worst case for your users, and what's the operational fix that prevents it next time?
+</div>
+
+<p>Users lose their sessions — logged out, shopping carts emptied, in-progress work lost. The fix: <strong>Redis replication + Sentinel.</strong> A replica on a different machine continuously syncs from the primary. If the primary goes down, Sentinel promotes the replica. The AOF on the primary might be corrupted (machine crash), but the replica's AOF is intact (different machine, different disk). The worst case for users shrinks from "all sessions lost" to "sessions from the last 1 second of writes (the AOF fsync window) lost." For a session store, that's acceptable. For a payment ledger, you'd use Redis Enterprise with synchronous replication or a different database entirely.</p>
+
+<div class="lens">
+  <span class="lens-tag">the redis-as-database trap</span>
+  Redis is memory-first. If your dataset outgrows RAM, Redis either evicts (if configured with a maxmemory policy) or crashes (if not). Using Redis as a primary database means your dataset must fit in memory, which is expensive at scale. The right pattern: Redis as a cache + operational store (sessions, rate limits, leaderboards, queues), with a disk-backed database as the source of truth. Redis as a database is viable for small-to-medium datasets with strict latency requirements, but the memory cost and persistence model make it a specialized choice, not a general-purpose one.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The durability mechanism —</span> <a href="write-ahead-log.html">write-ahead logging</a> is what Redis's AOF implements. The AOF is a WAL: commands are logged before being applied, and replay rebuilds state.</p>
+        <p class="thread"><span class="lead-in">The probabilistic counter —</span> <span class="meta-line">HyperLogLog</span> is Redis's built-in cardinality estimator. Count a billion unique visitors in 12 KB of memory.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Redis sits among WAL, rate limiting, queues, and HyperLogLog">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">WAL</text>
+          </g>
+          <g class="node learned" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">rate limiting</text>
+          </g>
+          <g class="node learned" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">queues</text>
+          </g>
+          <g class="node" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">HyperLogLog</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">Redis</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="write-ahead-log.html">Write-ahead logging</a></li>
+          <li><a href="rate-limiting.html">Rate limiting</a></li>
+          <li><a href="queues.html">Queues as a design tool</a></li>
+          <li><span class="meta-line">HyperLogLog · frontier</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Data &amp; Storage · in-memory</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Event Sourcing &amp; CQRS — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Design &amp; Architecture</span><span class="dot"></span>
+      <span>patterns</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Event Sourcing &amp; CQRS</h1>
+    <p class="standfirst">Storing what happened instead of what is — and reading it back however you need to.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>A traditional database stores the current state: a row says <code>balance = 50</code>. When the balance changes to 40, the row is updated to <code>balance = 40</code>. The old value is gone. You can reconstruct <em>that</em> the balance changed (from the WAL or an audit table, if you set one up), but you can't reconstruct <em>why</em> — was it a withdrawal? A fee? A correction? And you can't answer "what was the balance at 3:15 PM last Tuesday?" unless you were snapshotting or logging.</p>
+
+<p><span class="term">Event sourcing</span> inverts the model. Instead of storing the current state, store the sequence of events that produced it: <code>AccountOpened(id=7)</code>, <code>Deposited(100)</code>, <code>Withdrew(30)</code>, <code>Withdrew(20)</code>. The current balance (50) is derived by replaying the events: <code>0 + 100 − 30 − 20 = 50</code>. The events are the source of truth; the current state is a cached projection.</p>
+
+<div class="pull">The database stores the journal, not the ledger. The ledger is a view over the journal.</div>
+
+<h2>Why you'd do this</h2>
+
+<p>Event sourcing buys you three things that are expensive or impossible with a state-based model:</p>
+
+<ol>
+  <li><strong>Complete audit trail.</strong> Every state change has a corresponding event with a timestamp, a causation ID, and the full context of what happened. Compliance and debugging are built in — there's no separate audit table to maintain.</li>
+
+  <li><strong>Temporal queries.</strong> "What was the account balance at 3:15 PM?" Replay events up to that timestamp. "What was the user's shopping cart before they added the coupon?" Revert the CouponApplied event. With event sourcing, time travel is a feature of the architecture, not a bolt-on.</li>
+
+  <li><strong>Multiple read models (CQRS).</strong> You can project the same events into different shapes for different consumers. The account service reads <code>AccountSummary</code> (balance, status). The analytics service reads <code>AccountActivity</code> (daily aggregates). The fraud service reads <code>SuspiciousTransactionStream</code>. All built from the same events, each optimized for its own read pattern.</li>
+</ol>
+
+<p>The fourth benefit, more subtle: events capture <em>intent</em>. "Withdrew 20" carries more semantic meaning than <code>balance = balance − 20</code>. Domain experts speak in events ("a withdrawal happened"), not state diffs ("the balance column changed"). When the code models the domain's actual language, the gap between requirements and implementation shrinks.</p>
+
+<h2>CQRS: separate the write model from the read model</h2>
+
+<p><span class="term">Command Query Responsibility Segregation</span> (CQRS) is the natural companion to event sourcing. The idea: use a different model for writes than for reads.</p>
+
+<pre class="pre-label">CQRS with event sourcing
+Commands (writes)          Events (append-only)        Queries (reads)
+───────────────           ─────────────────────        ───────────────
+PlaceOrder           →    OrderPlaced              →   OrderView (for display)
+CancelOrder          →    OrderCancelled           →   OrderHistoryView
+AddItem              →    ItemAdded                →   DailySalesProjection
+                                                       FraudAlertProjection</pre>
+
+<p>Commands are validated against business rules, then produce events. Events are appended to the <a href="kafka.html">event store</a> (a log). Projections (read models) subscribe to the event stream and update their own denormalized views — one event might update five different projections, each optimized for a specific query. The read side can be eventually consistent (the projection updates a few milliseconds after the event is appended), which is the standard trade: write consistency for read flexibility.</p>
+
+<h2>The costs (and they're real)</h2>
+
+<div class="lens">
+  <span class="lens-tag">when not to</span>
+  Event sourcing multiplies complexity. You now have an event store, an event schema (which must evolve — you can't just ALTER TABLE), projections to maintain, and eventual consistency to reason about. A simple CRUD app becomes a distributed system with all the attendant failure modes. Use event sourcing when the domain genuinely needs audit trails, temporal queries, or multiple read models. For a blog, a to-do list, or an internal dashboard, it's overengineering. The test: if "what happened and why?" is the most common question your system answers, event sourcing is a fit. If "what is the current state and give it to me fast?" is the question, a relational database with a few indexes is the better answer.
+</div>
+
+<p>Specific sharp edges:</p>
+<ul>
+  <li><strong>Event schema evolution.</strong> An event is immutable once written. But the schema of Withdrew might change (adding a <code>fee</code> field, splitting into WithdrewCash and WithdrewATM). You need an upcasting strategy — transform old events to the new schema on read, or support multiple versions in the projection code.</li>
+  <li><strong>Rebuilding projections.</strong> If you change a projection's logic, you must replay every event from the beginning to rebuild it. For an account with 10 years of history, that's millions of events. The fix: <span class="term">snapshots</span> — periodically save the projection state, then replay only events after the snapshot.</li>
+  <li><strong>Eventual consistency.</strong> The read model is a few milliseconds behind the write model. Most applications handle this fine. The ones that don't (a user withdraws money, refreshes, sees the old balance, withdraws again) need stronger consistency — which means waiting for the projection to update before confirming the write, defeating the purpose of CQRS.</li>
+</ul>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  Your event store has 500 million events. You need to add a new field to the Withdrew event and rebuild the balance projection. The projection currently takes 2 hours to rebuild from scratch. What's the architectural pattern that brings this down to seconds?
+</div>
+
+<p><span class="term">Snapshotting.</span> Every N events (or at a schedule — nightly), save the current projection state as a snapshot. On rebuild, load the most recent snapshot, then replay only the events that occurred after it. If you snapshot daily and the rebuild happens mid-day, you replay ~12 hours of events instead of 10 years. The snapshot is purely an optimization — it's derivable from the events — but in practice, it's the difference between an architecture that works and one that's paralyzed by rebuild times.</p>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The log that stores the events —</span> <a href="kafka.html">Kafka as a log</a> is the most common event store in event-sourced systems. The log abstraction is the engine under the pattern.</p>
+        <p class="thread"><span class="lead-in">The pattern for multi-service transactions —</span> <span class="meta-line">the saga pattern</span> is how you coordinate a business transaction that spans services when you can't hold one big lock.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Event sourcing sits among Kafka, saga, DDD, and idempotency">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">Kafka</text>
+          </g>
+          <g class="node" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">saga</text>
+          </g>
+          <g class="node" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">DDD</text>
+          </g>
+          <g class="node" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">idempotency</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">event src.</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="kafka.html">Kafka as a log</a></li>
+          <li><span class="meta-line">The saga pattern · frontier</span></li>
+          <li><span class="meta-line">DDD, the useful parts · frontier</span></li>
+          <li><span class="meta-line">Idempotency · frontier</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Design &amp; Architecture · patterns</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

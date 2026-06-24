@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Eventual Consistency — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Systems &amp; Distributed</span><span class="dot"></span>
+      <span>theory</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Eventual Consistency</h1>
+    <p class="standfirst">Wrong now, right later — and why that's often the correct trade, not a bug you couldn't fix.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>Strong consistency means: after a write completes, all subsequent reads see that write. This is what a single-machine database gives you by default. It's also what you give up when you distribute data across machines and want the system to remain available during network partitions. The <a href="cap-theorem.html">CAP theorem</a> tells you that during a partition, you choose between consistency and availability. <span class="term">Eventual consistency</span> is the choice for availability: the system accepts writes during a partition, replicas diverge, and when the partition heals, they converge.</p>
+
+<div class="pull">Eventual consistency is the promise that if no new writes arrive, eventually all replicas will return the same value. It says nothing about how long "eventually" takes, or what happens while they differ.</div>
+
+<h2>What "eventually" actually means</h2>
+
+<p>The formal definition (from Werner Vogels, Amazon CTO and Dynamo architect):</p>
+
+<ol>
+  <li>If no new updates are made to an object, eventually all accesses will return the last updated value.</li>
+  <li>The system guarantees that updates are propagated to all replicas, and all replicas eventually agree on the order of updates (the "reconciliation" or "merge" process).</li>
+</ol>
+
+<p>What this doesn't say: how long "eventually" takes. In a healthy system, it's milliseconds — the time for a write to propagate from one datacenter to another. During a partition, it's the duration of the partition plus reconciliation time. During a sustained outage, it's hours or days. "Eventually" is a bound on correctness, not latency. The system will <em>eventually</em> be correct; right now, it might not be.</p>
+
+<p>This is the trade you make. Strong consistency says "reads always return the latest write, but the system might be unavailable during a partition." Eventual consistency says "the system is always available for reads and writes, but reads might return stale data." The choice depends on what your application can tolerate.</p>
+
+<h2>What happens during the inconsistent window</h2>
+
+<p>During the window between a write and its propagation to all replicas, different replicas return different values for the same key. This leads to three specific anomalies:</p>
+
+<ul>
+  <li><strong>Stale reads:</strong> You write to one datacenter, read from another, and see the old value. This is the most common eventual consistency anomaly and the one users notice (refresh the page, see your change disappear, refresh again, see it reappear).</li>
+
+  <li><strong>Read-your-writes violation:</strong> You write a comment, navigate to a different page, come back, and your comment is gone — because the read hit a replica that hasn't received the write yet. The fix: route reads for a user's own data to the same replica that accepted their writes (sticky sessions, or a consistency token that encodes which replicas have been written to).</li>
+
+  <li><strong>Monotonic read violation:</strong> You read from replica A (which has the latest data), then read from replica B (which doesn't), and it appears that data has disappeared. Time appears to move backward. The fix: ensure each user's reads are served by a replica that's at least as current as the one they last read from.</li>
+</ul>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  A user in Europe writes a tweet. A user in the US reads their timeline. The tweet is visible. A user in Asia reads their timeline. The tweet is absent. All three requests hit different datacenters. The system is eventually consistent. What specific property is being violated for the Asian user, and what's the architectural fix if Twitter wanted to prevent this?
+</div>
+
+<p>The Asian user is experiencing a stale read. The write to the European datacenter hasn't propagated to Asia yet. The architectural fix: <span class="term">synchronous replication</span> to a quorum before acknowledging the write. If W replicas must acknowledge the write (across datacenters), and the user reads from R replicas with R+W > N, the Asian user will always see the tweet. But this costs latency — the European user's write now waits for acknowledgment from at least one remote datacenter before the "tweet sent" confirmation appears. Twitter chose availability (the write succeeds instantly in the local datacenter, propagation happens async) over consistency (the tweet appears everywhere simultaneously). For most social media, this is the right trade. For a bank balance, it's not.</p>
+
+<h2>Convergence: how replicas actually agree</h2>
+
+<p>Eventual consistency doesn't mean "replicas merge randomly." It means they converge using a deterministic merge strategy:</p>
+
+<ul>
+  <li><strong>Last-writer-wins (LWW):</strong> Every write has a timestamp. The write with the latest timestamp wins. Simple, deterministic, and silently wrong when concurrent writes both have valid data (one user's edit is discarded). Used by Cassandra for conflict resolution when no custom resolver is configured.</li>
+
+  <li><strong>Version vectors:</strong> Each replica tracks which writes it has seen using a vector of per-replica counters. When two replicas exchange state, the version vectors identify which writes are missing on each side — no timestamps needed, no clock synchronization. Used by DynamoDB for causality tracking.</li>
+
+  <li><strong>CRDTs:</strong> Data structures designed to merge deterministically. An increment-only counter as a CRDT converges to the sum regardless of merge order. A set CRDT converges to the union. No conflict resolution needed — the data structure's merge operation is mathematically guaranteed to converge. Used by Riak and Redis Enterprise for specific data types.</li>
+</ul>
+
+<div class="lens">
+  <span class="lens-tag">the business question</span>
+  Eventual consistency is a product decision, not a database configuration. The question is: what's the business cost of showing stale data for N seconds? For a shopping cart, the cost is low (a stale cart for 2 seconds might show the wrong item count; the next page load corrects it). For a payment ledger, the cost is existential (a stale balance might let someone withdraw money they don't have). The database gives you knobs (R, W, N). The business gives you the acceptable staleness window. Set the knobs to meet that window, and no tighter — over-consistency is over-engineering.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The data structures that merge cleanly —</span> <span class="meta-line">CRDTs</span> are the mathematical answer to "how do replicas converge without conflicts?" — counters, sets, and registers that merge deterministically.</p>
+        <p class="thread"><span class="lead-in">The clock that tracks causality without timestamps —</span> <span class="meta-line">vector clocks</span> solve the "which write happened first?" problem without requiring synchronized clocks across machines.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Eventual consistency sits among CAP, CRDTs, vector clocks, and quorums">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">CAP</text>
+          </g>
+          <g class="node" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">CRDTs</text>
+          </g>
+          <g class="node" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">vector clocks</text>
+          </g>
+          <g class="node learned" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">quorums</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">eventual cons.</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="cap-theorem.html">The CAP theorem</a></li>
+          <li><span class="meta-line">CRDTs · frontier</span></li>
+          <li><span class="meta-line">Vector clocks · frontier</span></li>
+          <li><a href="quorums.html">Quorums & R+W>N</a></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Systems &amp; Distributed · theory</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

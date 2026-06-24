@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Race Conditions &amp; Memory Models — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Concurrency &amp; Parallelism</span><span class="dot"></span>
+      <span>fundamentals</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Race Conditions &amp; Memory Models</h1>
+    <p class="standfirst">Why correct-looking concurrent code is wrong in ways your tests won't catch — and why the hardware is playing a different game than you think.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>You write <code>x = 1</code> on thread A and <code>print(x)</code> on thread B. Thread A goes first. What does thread B print? If you answered "1," the hardware would like a word. Thread B might print 0. It might print 1. It might print both on different runs of the same binary on the same machine. The reason isn't a bug in your code — it's that your code and the hardware are operating under different rules about what "first" means.</p>
+
+<h2>Data races: when two threads touch the same thing without coordination</h2>
+
+<p>A <span class="term">data race</span> occurs when two threads access the same memory location, at least one access is a write, and there's no synchronization between them. The result is <span class="term">undefined behavior</span> — not just "any value is possible," but in C/C++, the compiler is allowed to assume your program doesn't contain data races and optimize accordingly, producing results that are logically impossible if you trace through the source code line by line.</p>
+
+<pre class="pre-label">A data race, in Go
+var counter int
+
+func increment() { counter++ }     // goroutine A: read, add, write
+func read()      { fmt.Println(counter) }  // goroutine B
+
+// Run both concurrently. The Go race detector (-race) catches this.</pre>
+
+<p>The <code>counter++</code> operation is not atomic. It compiles to: load counter into a register, increment the register, store back to memory. If thread B loads between thread A's load and store, both threads see the same value, both write back the same incremented value, and one increment is lost. This is the <span class="term">lost update</span> problem, and it's the simplest race condition — the one you catch in code review and protect with a mutex or an atomic. The harder ones are structural.</p>
+
+<h2>Memory ordering: when the hardware reorders your instructions</h2>
+
+<div class="pull">The order you write lines of code is not the order the CPU executes them, and it's not the order other CPUs observe them.</div>
+
+<p>Both the compiler and the CPU are free to reorder memory operations as long as the reordering doesn't change the observable behavior of <em>a single thread</em>. If your code on one thread writes to A and then to B, the CPU might write to B first — because B's cache line is available now and A's is in a different state. On a single thread, this is invisible (no other code depends on the ordering of A and B). But another thread watching A and B can observe B updated before A, and if that thread's logic assumed A updates first, you have a bug that no amount of single-threaded testing will catch.</p>
+
+<pre class="pre-label">Message-passing without proper ordering
+// Thread A:                           // Thread B:
+data = 42;     // "payload"           while (!ready) { /* spin */ }
+ready = true;  // "flag"              print(data);
+
+// Expected: prints 42.
+// Reality on ARM/PowerPC: can print 0, because thread B
+// might see ready=true before data=42 is visible.</pre>
+
+<p>Thread B's observation of the writes can be reordered. On x86 (strong memory model), stores are not reordered with other stores, so this pattern mostly works — but "mostly" is not a correctness guarantee. On ARM (weak memory model, used in every smartphone and Apple Silicon Mac), stores <em>can</em> appear in a different order to other threads. The fix is a <span class="term">memory barrier</span> (a fence, or — more practically — an atomic operation with acquire/release semantics) that tells the hardware "everything before this barrier must be visible before anything after it."</p>
+
+<h2>Memory models: the contract between your code and the hardware</h2>
+
+<p>A <span class="term">memory model</span> is the set of guarantees a language or hardware platform makes about how memory operations are ordered and visible across threads. It answers: "if thread A writes to x and y, and thread B reads y and then x, what values can B see?"</p>
+
+<p>The spectrum, from strongest to weakest guarantees:</p>
+
+<ul>
+  <li><strong>Sequential consistency (SC):</strong> All threads see all memory operations in a single global order. Easy to reason about, expensive to implement. No modern hardware provides this natively.</li>
+
+  <li><strong>x86-TSO (Total Store Order):</strong> Stores are not reordered with other stores. Loads are not reordered with other loads. Stores <em>can</em> be reordered with later loads (store buffering). This is what x86 CPUs actually do. It's strong enough that many common patterns "just work" — and pernicious enough that the ones that don't are surprising.</li>
+
+  <li><strong>ARM / RISC-V (weak ordering):</strong> Almost anything can be reordered unless you insert explicit barriers. The hardware is simpler and more power-efficient; the burden shifts to the programmer (or the compiler, or the language runtime) to insert barriers where needed.</li>
+</ul>
+
+<p>Languages build their own memory models on top of these hardware models. Java's memory model was the first rigorous language-level memory model (2004, after years of debate). C++11 added one. Rust inherits C++'s model. Go has its own model. The key primitives are <span class="term">atomic operations</span> with ordering guarantees — <code>load</code>, <code>store</code>, <code>compare_exchange</code> — each parameterized by a memory ordering: <code>relaxed</code> (no ordering guarantee, cheapest), <code>acquire</code>/<code>release</code> (pairs that create a happens-before relationship), <code>sequentially consistent</code> (global total order, most expensive).</p>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  You use a <code>Mutex</code> to protect the counter. Problem solved — the mutex provides mutual exclusion and memory ordering. But your code now has a different failure mode: two threads each holding a different mutex, each waiting for the other's mutex. What's the formal name for this, and what's the practical rule that prevents it?
+</div>
+
+<p>The formal name is <span class="term">deadlock</span>. The practical rule: <strong>acquire locks in a consistent global order.</strong> If every code path that needs mutexes A and B acquires A before B, you can't deadlock — there's no cycle in the wait-for graph. The other prevention: <code>try_lock</code> with a timeout and backoff (if you can't get the lock after N ms, release what you hold and retry). This is the engineering practice that sits on top of the memory model theory: the hardware guarantees atomics do what they say, and you build higher-level concurrency primitives on top.</p>
+
+<div class="lens">
+  <span class="lens-tag">the real advice</span>
+  You shouldn't be writing atomics by hand unless you're building concurrency primitives. Use the language's standard tools — mutexes, channels, async runtimes, <code>Arc&lt;Mutex&lt;T&gt;&gt;</code> — which encapsulate the ordering guarantees. They're written by people who've read the memory model, tested on every architecture, and handled the edge cases. The value of understanding memory models isn't that you'll write <code>memory_order_acquire</code> — it's that when your concurrent code fails in a way that makes no sense, you'll suspect reordering instead of dismissing it as impossible.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The tools for mutual exclusion —</span> <span class="meta-line">locks, deadlock & livelock</span> covers mutexes, spinlocks, reader-writer locks, and the classic failure modes of each.</p>
+        <p class="thread"><span class="lead-in">Going lock-free —</span> <span class="meta-line">atomics & lock-free programming</span> explains how to coordinate threads without ever taking a lock, using the memory ordering primitives this page describes.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Race conditions sit among locks, atomics, async models, and the actor model">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">locks</text>
+          </g>
+          <g class="node" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">atomics</text>
+          </g>
+          <g class="node learned" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">async models</text>
+          </g>
+          <g class="node" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">actor model</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">race cond.</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><span class="meta-line">Locks, deadlock & livelock · frontier</span></li>
+          <li><span class="meta-line">Atomics & lock-free · frontier</span></li>
+          <li><a href="async-models.html">Event loops vs threads vs coroutines</a></li>
+          <li><span class="meta-line">The actor model · frontier</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Concurrency &amp; Parallelism · fundamentals</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

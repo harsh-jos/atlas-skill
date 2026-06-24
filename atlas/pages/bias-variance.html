@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The Bias-Variance Tradeoff — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>AI / ML Foundations</span><span class="dot"></span>
+      <span>theory</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">The Bias-Variance Tradeoff</h1>
+    <p class="standfirst">The single lens that explains why your model under- or over-fits — and why more data, bigger models, and longer training don't always help.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>You train a model. It gets 95% accuracy on the training set and 90% on the test set. You add more features. Training accuracy rises to 98%. Test accuracy drops to 85%. You've just crossed from underfitting into overfitting, and the bias-variance tradeoff is the mathematical reason why.</p>
+
+<p>Every model's error on unseen data can be decomposed into three terms: <strong>bias</strong> (how wrong the model's assumptions are on average), <strong>variance</strong> (how much the model's predictions change when trained on a different sample of the data), and <strong>irreducible error</strong> (noise in the data itself, which no model can eliminate). The tradeoff is that decreasing bias tends to increase variance, and vice versa. You can't simultaneously minimize both — the best you can do is find the sweet spot for your specific problem.</p>
+
+<h2>The three errors</h2>
+
+<div class="pull">Bias is being consistently wrong. Variance is being inconsistently wrong. Irreducible error is being wrong because the answer isn't in the data.</div>
+
+<ul>
+  <li><strong>High bias (underfitting):</strong> The model is too simple. A linear model trying to fit a parabola — no amount of data will make it fit the curve. Training error is high, test error is similarly high. The model didn't learn enough from the training data to be useful.</li>
+
+  <li><strong>High variance (overfitting):</strong> The model is too complex. It's memorizing noise in the training data rather than learning the underlying pattern. Training error is near zero. Test error is much higher. The model learned the training data too well — including its random fluctuations.</li>
+
+  <li><strong>Irreducible error:</strong> The data itself is noisy. Two identical inputs produce different outputs due to unmeasured factors. You can't eliminate this with a better model; you can only improve your measurement of the inputs.</li>
+</ul>
+
+<pre class="pre-label">Error decomposition
+Expected test error = Bias² + Variance + Irreducible error
+
+Bias²:     (E[model_prediction] - true_function)²
+Variance:  E[(model_prediction - E[model_prediction])²]
+Noise:     Var[true_label | true_input]</pre>
+
+<p>The squared bias term means that bias hurts quadratically — a model that's consistently off by 2 is four times worse than one off by 1. Variance is also a squared deviation, but it measures sensitivity to the training sample, not distance from the truth.</p>
+
+<h2>The tradeoff isn't a law of nature</h2>
+
+<p>The classical bias-variance tradeoff (the "U-shaped curve") says: as model complexity increases, bias decreases (the model can fit more patterns), variance increases (it fits noise too), and there's an optimal complexity in the middle. This holds for "classical" models trained to convergence on fixed-size datasets.</p>
+
+<p>Modern deep learning complicates the picture. The <span class="term">double descent</span> phenomenon (Belkin et al., 2019) shows that after the interpolation threshold — the point where the model has exactly enough parameters to memorize the training data perfectly — test error can <em>decrease again</em> as you add even more parameters. In the overparameterized regime (where deep learning lives: billions of parameters, trained beyond the point of zero training error), larger models often generalize better despite having effectively infinite capacity to overfit. This is the "blessing of scale" — and it's not fully explained by the classical bias-variance framework.</p>
+
+<p>Practical takeaway: the bias-variance decomposition is the right mental model for understanding <em>why</em> models fail to generalize in classical ML. For modern deep learning, the lesson is more nuanced: overparameterization + implicit regularization (from SGD, batch norm, and the architecture) can produce models that simultaneously achieve low bias and low variance. The tradeoff isn't suspended — it's that the effective capacity of the model is constrained by things other than parameter count (optimization dynamics, inductive biases, the data distribution itself).</p>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  You train a random forest with 1,000 trees. Training accuracy is 99.9%. Test accuracy is 92%. Is this high bias or high variance? And what specific knob in a random forest addresses it?
+</div>
+
+<p>High variance — the model is overfitting. The gap between training and test accuracy (7.9 percentage points) is the variance signature. The knob: <strong>increase <code>min_samples_leaf</code></strong> or <strong>decrease <code>max_depth</code></strong>. These constrain each tree's complexity, reducing the model's capacity to memorize noise. Alternatively, reduce the number of features considered at each split (<code>max_features</code>), which increases the diversity between trees and reduces the variance of the ensemble. A random forest with 1,000 unconstrained trees is a variance machine — each tree memorizes a different subset of the noise, and the ensemble averages them out imperfectly.</p>
+
+<div class="lens">
+  <span class="lens-tag">the practical litmus</span>
+  If your model's training and test errors are both high and close together → high bias. Make the model more complex (more features, more layers, less regularization). If training error is low but test error is much higher → high variance. Add regularization, get more data, or reduce model complexity. If both are low → you're done. Deploy. The gap between training and test error is the most diagnostic number in ML, and the bias-variance decomposition is why it works.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">How to trust that test error number —</span> <span class="meta-line">cross-validation & data leakage</span> is how you estimate test error honestly, and the subtle ways your evaluation lies to you.</p>
+        <p class="thread"><span class="lead-in">The deliberate handicap that reduces variance —</span> <span class="meta-line">regularization</span> covers the techniques (L1/L2, dropout, early stopping) that deliberately increase bias to reduce variance.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Bias-variance sits among cross-validation, regularization, loss functions, and gradient descent">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">cross-val.</text>
+          </g>
+          <g class="node" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">regularization</text>
+          </g>
+          <g class="node learned" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">loss fns</text>
+          </g>
+          <g class="node learned" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">grad. descent</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">bias-var</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><span class="meta-line">Cross-validation · frontier</span></li>
+          <li><span class="meta-line">Regularization · frontier</span></li>
+          <li><a href="loss-functions.html">Loss functions</a></li>
+          <li><a href="gradient-descent.html">Gradient descent</a></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">AI / ML Foundations · theory</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

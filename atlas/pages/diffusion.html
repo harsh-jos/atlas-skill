@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Diffusion Models — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Deep Learning</span><span class="dot"></span>
+      <span>generative</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Diffusion Models</h1>
+    <p class="standfirst">Generating images by learning to undo noise, step by step — the idea that turned "AI art" from a curiosity into a production medium.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>In 2014, Ian Goodfellow proposed GANs: two networks (generator and discriminator) playing cat and mouse, with the generator learning to produce realistic images by trying to fool the discriminator. GANs produced stunning results but were notoriously hard to train — mode collapse (the generator produces one good image and ignores the rest of the distribution), training instability (the two networks oscillate instead of converging), and hyperparameter sensitivity.</p>
+
+<p>In 2020, a group at Berkeley (Ho, Jain, and Abbeel) published "Denoising Diffusion Probabilistic Models," and the paradigm shifted. Instead of training a generator to fool a discriminator, train a model to <em>remove noise</em> from an image. Start with pure random noise. Run the denoising model repeatedly (50–1000 steps). The result is a coherent image. No adversary, no min-max game, no mode collapse. Just a model that learns to undo noise.</p>
+
+<div class="pull">A diffusion model is trained to remove noise from images. At generation time, you start with pure noise and denoise it step by step — and the result is an image that never existed.</div>
+
+<h2>How diffusion works</h2>
+
+<p>Training has two phases:</p>
+
+<ol>
+  <li><strong>Forward process (adding noise):</strong> Take a real image. Add a small amount of Gaussian noise. Repeat T times (typically T=1000). After T steps, the image is indistinguishable from pure noise — every pixel is random. This process is fixed (not learned). It's just adding noise according to a schedule.</li>
+
+  <li><strong>Reverse process (removing noise):</strong> Train a neural network (typically a U-Net, though <a href="transformers.html">transformers</a> are increasingly used — DiT, the Diffusion Transformer) to predict the noise that was added at each step. Given a noisy image at step t, the model predicts the noise component, and we subtract it to recover the slightly less noisy image at step t−1.</li>
+</ol>
+
+<pre class="pre-label">Diffusion training, simplified
+For each training image x₀:
+  1. Sample a random timestep t ∈ [1, T]
+  2. Add noise ε to x₀ according to the schedule at step t, producing xₜ
+  3. Train the model to predict ε from xₜ and t
+     Loss: MSE(ε_predicted, ε_actual)
+
+At generation time:
+  1. Start with random noise x_T
+  2. For t = T down to 1:
+     Predict the noise in xₜ
+     Remove it: xₜ₋₁ = denoise(xₜ, predicted_noise, t)
+  3. Return x₀ — the generated image</pre>
+
+<p>The model's only job is to answer: "what noise is in this image?" It learns this by seeing millions of (noisy image, noise) pairs during training. At generation time, it applies that knowledge iteratively — each step removes a little noise, and after enough steps, what's left is a coherent image rather than random pixels.</p>
+
+<h2>Text conditioning: how Stable Diffusion knows what to draw</h2>
+
+<p>A pure diffusion model generates random images from the training distribution — a random face, a random landscape. To generate "a cat wearing a spacesuit," the model needs text conditioning. The standard approach: encode the text prompt with a CLIP text encoder (the same model that produces <a href="embeddings.html">embeddings</a> for text-image alignment), and inject the text embedding into the U-Net at each denoising step via <span class="term">cross-attention</span>. The U-Net attends to the text embedding while predicting noise, so the noise prediction is conditioned on the prompt. The result: the model removes noise in a way that's consistent with the text description.</p>
+
+<p>Stable Diffusion (2022, Stability AI) was the breakthrough: train on a large-scale image-text dataset (LAION-5B), use a latent diffusion architecture (diffuse in a compressed latent space rather than pixel space, making it feasible on consumer GPUs), and release it openly. The result was an explosion of image generation tools (Midjourney, DALL-E, Stable Diffusion itself) and an entire ecosystem of fine-tuned variants.</p>
+
+<h2>Why diffusion beat GANs</h2>
+
+<ul>
+  <li><strong>Training stability:</strong> Diffusion minimizes a simple MSE loss. GANs play a min-max game. The diffusion loss always goes down; the GAN loss might oscillate.</li>
+  <li><strong>Mode coverage:</strong> Diffusion models generate diverse samples from the full distribution. GANs are prone to mode collapse — the generator finds one good output and ignores the rest.</li>
+  <li><strong>Likelihood:</strong> Diffusion models provide a tractable likelihood (you can compute how probable an image is under the model). GANs are implicit models — they can generate but not evaluate probability.</li>
+</ul>
+
+<p>The cost: generation is slow. A 50-step diffusion model requires 50 forward passes through the U-Net. GANs generate in one forward pass. This is why diffusion models have driven the development of faster sampling methods (DDIM reduces 1000 steps to 50–100; consistency models reduce it to 1–4 steps) and why real-time video generation is still an active research problem.</p>
+
+<div class="lens">
+  <span class="lens-tag">the compute reality</span>
+  Training a state-of-the-art diffusion model costs millions in compute (Stable Diffusion was trained on 256 A100s for weeks). Generation is cheaper — a single consumer GPU can generate an image in seconds — but still orders of magnitude more expensive than calling a classification API. Diffusion models are compute-heavy at both training and inference time, which limits their deployment to use cases where the value per generated image justifies the cost: creative tools, design, entertainment. Real-time applications (video calls, games) are still beyond the latency budget of diffusion models in 2026.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The architecture diffusion models increasingly use —</span> <a href="transformers.html">the transformer</a> is replacing U-Nets in state-of-the-art diffusion (DiT). The same architecture that generates text is now generating images.</p>
+        <p class="thread"><span class="lead-in">The representation that connects text and images —</span> <a href="embeddings.html">embeddings</a> (CLIP) are how "a cat in a spacesuit" becomes a vector that guides the denoising process.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Diffusion sits among transformers, embeddings, backprop, and regularization">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">transformers</text>
+          </g>
+          <g class="node learned" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">embeddings</text>
+          </g>
+          <g class="node learned" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">backprop</text>
+          </g>
+          <g class="node" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">regularization</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">diffusion</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="transformers.html">The transformer</a></li>
+          <li><a href="embeddings.html">Embeddings</a></li>
+          <li><a href="backprop.html">Backpropagation</a></li>
+          <li><span class="meta-line">Dropout, BatchNorm · frontier</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Deep Learning · generative</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gossip Protocols — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Systems &amp; Distributed</span><span class="dot"></span>
+      <span>distribution</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Gossip Protocols</h1>
+    <p class="standfirst">How a cluster spreads news the way a rumor spreads through a crowd — exponentially, inevitably, and without a central coordinator.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>You have 10,000 nodes. You need every node to know the cluster's current membership — who's alive, who's dead, what their capabilities are. You could use a central registry: every node reports to it, every node reads from it. Now you have a single point of failure and a bottleneck. You could use <a href="consensus.html">consensus</a>: the registry is replicated via Raft. Now you have strong consistency but every membership update requires a majority quorum — expensive at 10,000 nodes.</p>
+
+<p>The alternative that actually scales: <span class="term">gossip</span>. Each node periodically picks a random peer and exchanges state with it. The information spreads exponentially — after O(log n) rounds, essentially every node knows. There's no leader, no quorum, no single point of failure. The protocol converges probabilistically, and the probability of full convergence approaches 1 exponentially quickly.</p>
+
+<div class="pull">Gossip trades deterministic guarantees for probabilistic ones. In exchange, it gets infinite horizontal scalability and no single point of failure.</div>
+
+<h2>The rumor-spreading algorithm</h2>
+
+<p>The simplest gossip protocol has three steps per round:</p>
+
+<pre class="pre-label">Gossip (push-pull), one round
+Each node, every T seconds:
+1. Pick a random peer from the membership set
+2. Send my state + recent state digest to the peer
+3. Receive the peer's state
+4. Merge: for any key where the peer has newer data, update my copy</pre>
+
+<p>The magic is in step 3: "merge." Gossip relies on <span class="term">conflict-free merging</span>. If node A says "server X is alive, last heartbeat 100ms ago" and node B says "server X is alive, last heartbeat 50ms ago," the merge picks the fresher heartbeat (50ms). If the merge operation is commutative, associative, and idempotent, the protocol converges regardless of message ordering, duplicates, or losses. CRDTs (Conflict-free Replicated Data Types) provide exactly these merge semantics for richer data structures — counters, sets, maps.</p>
+
+<p>The convergence speed is remarkable. In a network of N nodes where each node gossips to one random peer per round, about O(log N) rounds are needed for a rumor to reach all nodes. For 10,000 nodes, that's about 9 rounds — and if each round is 1 second, the entire cluster converges in under 10 seconds. Doubling the cluster size adds one round. This logarithmic scaling is why gossip is used at the largest deployments.</p>
+
+<h2>Where gossip runs the world</h2>
+
+<ul>
+  <li><strong>Cassandra / Dynamo:</strong> Cluster membership and failure detection. Each node gossips with three others every second. If a node hasn't been heard from in a configurable timeout, it's marked dead — but the protocol doesn't require unanimous agreement. Different nodes may have slightly different views of who's alive at any moment, and the system is designed to tolerate this.</li>
+
+  <li><strong>Consul / Serf:</strong> Membership, failure detection, and custom event propagation. Serf (HashiCorp's gossip library) uses a SWIM variant (Scalable Weakly-consistent Infection-style Membership) that detects failures with a suspicion mechanism before declaring a node dead, reducing false positives from transient network issues.</li>
+
+  <li><strong>Redis Cluster:</strong> Node discovery and configuration propagation. Nodes gossip about who owns which hash slots.</li>
+
+  <li><strong>Bitcoin / Ethereum:</strong> Block and transaction propagation. When a node receives a new block, it gossips it to its peers, who gossip it to theirs. The entire network learns about a new block in seconds, without a central broadcaster.</li>
+</ul>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  Your gossip-based failure detector marks a node as "dead" after 3 missed heartbeats (3 seconds with a 1-second gossip interval). The network experiences a 2-second packet loss event. How many nodes falsely mark the affected node as dead, and why does the false positive spread?
+</div>
+
+<p>Potentially many — the false positive spreads <em>faster than the correction</em>. After 2 seconds of loss, half the cluster may have failed to hear from the node in the last round, and within another round, those nodes have gossiped "node X is suspicious" to others. By the time the packet loss clears and the node resumes gossiping, the "node X is dead" rumor has already propagated to most of the cluster, and the correction ("node X is alive") must now propagate back through the same gossip rounds. This is the <span class="term">false positive propagation</span> problem in gossip-based failure detection. The fix: <span class="term">suspicion</span> — a node is marked "suspicious" first (it might be dead, but might be network loss), and only gossiped as "dead" after a longer confirmation period. Suspicion slows down true failure detection (a genuinely dead node takes longer to confirm) but dramatically reduces false positives — the right trade for most production systems.</p>
+
+<div class="lens">
+  <span class="lens-tag">when not gossip</span>
+  Gossip adds latency between an event and its visibility across the cluster. A configuration change might take 5–10 seconds to propagate. If you need a configuration change to be visible everywhere <em>before</em> the next operation (strong consistency), you need consensus, not gossip. Gossip is for information that can be slightly stale without breaking correctness: membership, load metrics, configuration versions. It's not for the write path of a database. The rule: if the information being slightly wrong for a few seconds causes data corruption, use consensus. If it causes slightly suboptimal load balancing, gossip is fine.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The data structures that merge cleanly —</span> <span class="meta-line">CRDTs</span> provide the conflict-free merge operations that make gossip converge. A counter CRDT can be incremented independently and merged without conflict.</p>
+        <p class="thread"><span class="lead-in">Where gossip and consensus meet —</span> <a href="consensus.html">consensus: Raft & Paxos</a> provides the strong guarantees gossip sacrifices. Most systems use both: consensus for the write path, gossip for membership.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Gossip sits among CRDTs, consistent hashing, leader election, and vector clocks">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">CRDTs</text>
+          </g>
+          <g class="node learned" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">consistent hash</text>
+          </g>
+          <g class="node" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">leader elect.</text>
+          </g>
+          <g class="node" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">vector clocks</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">gossip</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><span class="meta-line">CRDTs · frontier</span></li>
+          <li><a href="consistent-hashing.html">Consistent hashing</a></li>
+          <li><span class="meta-line">Leader election · frontier</span></li>
+          <li><span class="meta-line">Vector clocks · frontier</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Systems &amp; Distributed · distribution</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

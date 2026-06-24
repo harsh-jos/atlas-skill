@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tokenization &amp; BPE — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>LLMs &amp; Generative AI</span><span class="dot"></span>
+      <span>fundamentals</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Tokenization &amp; BPE</h1>
+    <p class="standfirst">Why an LLM can't spell, count the 'r's in "strawberry," or do arithmetic cleanly — and why that's not a bug but a design trade-off.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>An LLM doesn't see text. It sees a sequence of integers, each representing a <span class="term">token</span> — a fragment of text that might be a whole word, part of a word, a punctuation mark, or a single byte. Everything the model "knows" about language, it knows through the lens of its tokenizer. If the tokenizer splits a word strangely, the model inherits that strangeness. If the tokenizer is wasteful with a language, the model's effective context window shrinks for speakers of that language. Tokenization is the first thing that happens to your input and the last thing that happens to the model's output, and its fingerprints are on everything the model does.</p>
+
+<h2>Why not just use characters?</h2>
+
+<p>The naive approach is character-level tokenization: 'a' → 1, 'b' → 2, ..., 'z' → 26. This gives you a tiny vocabulary (26 + punctuation) but a huge sequence length — "the cat" is 7 tokens. A 100K-token context window would hold about 20,000 words, which isn't enough for a serious document. And each token carries almost no semantic information; the model has to learn from scratch that 'c', 'a', 't' in sequence means something specific, rather than getting the concept "cat" in one token.</p>
+
+<p>The other extreme is word-level tokenization: "the" → 1, "cat" → 57, "run" → 128, "running" → 391, "runs" → 692. This is compact and semantically rich, but the vocabulary would need to be enormous (English has ~170K words in common use, and you need to handle other languages, code, and never-before-seen words). A word-level tokenizer that encounters "defenestration" for the first time has no way to represent it — it's just <code>&lt;UNK&gt;</code>, the unknown token, which is useless.</p>
+
+<p>The modern answer is <span class="term">subword tokenization</span>: split text into pieces that are larger than characters but smaller than words. Common words stay whole; rare words get split into meaningful pieces. "running" might be "runn" + "ing". "defenestration" might be "def" + "en" + "estration". And critically, <em>every</em> input can be represented — there's no unknown token, because the tokenizer can always fall back to individual bytes.</p>
+
+<h2>Byte-Pair Encoding: the algorithm that won</h2>
+
+<div class="pull">Start with characters, then repeatedly merge the most frequent adjacent pair — until you have a vocabulary the size you want.</div>
+
+<p>BPE (Byte-Pair Encoding) is the dominant tokenization algorithm in 2026. GPT-4, GPT-5, Claude, Llama 3/4, and DeepSeek V4 all use BPE or byte-level BPE variants. The algorithm is surprisingly simple:</p>
+
+<pre class="pre-label">BPE training (on a corpus)
+1. Tokenize the corpus into characters (or bytes).
+   "low low low" → l o w _ l o w _ l o w
+
+2. Count all adjacent pairs:
+   (l,o): 3,  (o,w): 3,  (w,_): 2,  (_,l): 2
+
+3. Merge the most frequent pair: (l,o) → "lo"
+   Corpus becomes: lo w _ lo w _ lo w
+
+4. Count again:
+   (lo,w): 3,  (w,_): 2,  (_,lo): 2
+
+5. Merge the most frequent pair: (lo,w) → "low"
+   Corpus becomes: low _ low _ low
+
+6. Repeat for N merges, where N = target_vocab_size - initial_char_vocab_size</pre>
+
+<p>The result is a vocabulary of subword units that captures frequent patterns. "lower" and "lowest" both contain "low" as a token, so the model can share what it learns about "low" across those words. And any word that wasn't in the training corpus can be represented as a sequence of existing subword tokens — if the tokenizer has "de", "fen", "est", and "ration" in its vocabulary, "defenestration" becomes four tokens.</p>
+
+<p>Modern BPE implementations operate at the <em>byte level</em>. Instead of starting from Unicode characters, they start from raw bytes (0–255). This means every possible input can be tokenized — there's no such thing as an "unknown character," because byte 183 is always byte 183. It also means the tokenizer can handle any language, code, or binary data without special-casing.</p>
+
+<h2>Why tokenization matters more than you'd think</h2>
+
+<p>Tokenization isn't just preprocessing. It has real consequences that show up in production:</p>
+
+<p><strong>1. The strawberry problem.</strong> Ask an LLM "how many 'r's are in 'strawberry'?" and many models fail. The reason: "strawberry" might tokenize as ["st", "raw", "berry"]. The model never sees individual characters — it sees token IDs, and the embedding for token 8147 ("berry") doesn't encode the spelling. The model has to learn spelling from patterns in the training data, not from direct character access. This is why newer tokenizers use larger vocabularies (128K–200K vs the 32K of the GPT-2 era) — larger vocabularies mean more complete words as single tokens, reducing the spelling fragmentation.</p>
+
+<p><strong>2. The multilingual tax.</strong> In 2023-era tokenizers (32K–50K vocab), a sentence in Burmese or Tamil could take 5–15× more tokens than the same sentence in English. Since pricing is per-token and context windows are in tokens, this is both a cost and a capability penalty for non-English users. Newer tokenizers (OpenAI's <code>o200k_base</code> for GPT-4o, Llama 3's 128K, Gemma 2's 256K) have dramatically narrowed this gap by allocating more vocabulary to non-Latin scripts, but it's not perfectly fair and probably never will be — tokenizer design inherently encodes a Pareto trade-off across languages.</p>
+
+<p><strong>3. The arithmetic blind spot.</strong> "137 + 428" might tokenize as ["137", " +", " 428"] — or, worse, as ["13", "7", " +", "42", "8"] in a small-vocabulary tokenizer. In the first case, the model sees the numbers as wholes and can learn arithmetic patterns. In the second, it sees arbitrary fragments and has to reconstruct the numbers before it can add them. This is why LLM arithmetic accuracy is sensitive to both the tokenizer and the number of digits. It's also why chain-of-thought improves arithmetic — the model can break the problem into sub-steps that tokenize cleanly.</p>
+
+<p><strong>4. The cost multiplier.</strong> LLM pricing is per-token, and output tokens typically cost 3–5× more than input tokens. A prompt that tokenizes to 800 tokens in one vocabulary might be 1,200 in another — a 50% cost difference on every request. At high throughput, tokenizer choice is a line item in your infrastructure budget.</p>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  You swap your app from GPT-4 (100K vocab, <code>cl100k_base</code>) to GPT-4o (200K vocab, <code>o200k_base</code>). Your prompts are in Hindi. Does your token count go up or down, and why?
+</div>
+
+<p>It goes down. The <code>o200k_base</code> tokenizer was explicitly designed with better multilingual coverage. A Hindi sentence that tokenized to 200 tokens under <code>cl100k_base</code> might be 140 tokens under <code>o200k_base</code> — a 30% reduction. The larger vocabulary includes more complete Devanagari sequences, so words that were split into 3–4 fragments now stay as 1–2 tokens. This is a significant cost and latency improvement for multilingual applications, and it was a deliberate design choice, not a free side effect of a larger vocabulary.</p>
+
+<h2>The tokenizer landscape in 2026</h2>
+
+<p>Four implementations dominate, and they're not interchangeable:</p>
+
+<ul>
+  <li><strong>tiktoken</strong> (OpenAI): Fast BPE in Rust with pre-built encoding tables. Used by GPT-4o/5 and, via API compatibility, by many model providers. The gold standard for OpenAI-compatible token counting.</li>
+  <li><strong>SentencePiece</strong> (Google): Supports both BPE and Unigram (a probabilistic alternative that starts with a large vocabulary and prunes the least useful tokens). Language-agnostic — operates on raw text without whitespace pre-splitting. Used by Llama 2, Gemma, and older Mistral models.</li>
+  <li><strong>HuggingFace tokenizers</strong>: High-level API over a Rust backend. Most open-source models ship with a HuggingFace tokenizer, and the library handles the training, serialization, and fast inference.</li>
+  <li><strong>Community fast tokenizers</strong>: ztok (Zig, 1.9–5.5× faster than tiktoken), splintr-rs (Rust, 10–12× faster batch encoding). These matter when tokenization becomes a bottleneck — which it does at high throughput or in training pipelines.</li>
+</ul>
+
+<div class="lens">
+  <span class="lens-tag">the frontier</span>
+  Tokenization might not be permanent. Meta's <span class="term">Byte Latent Transformer</span> (BLT, Dec 2024) dynamically groups bytes into variable-length patches based on entropy, matching BPE models at comparable FLOPs without a fixed vocabulary. T-FREE uses sparse hashed character-trigram embeddings to eliminate the tokenizer entirely. Both are research-stage but functional at 8B-parameter scale. If byte-level models become the production default, tokenization — and all the problems described on this page — becomes a historical footnote. But we're not there yet, and in mid-2026, every frontier model still ships with a tokenizer.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">What happens after tokenization —</span> <span class="meta-line">the transformer</span> takes those token IDs, embeds them, and applies attention to build a representation of the sequence.</p>
+        <p class="thread"><span class="lead-in">How the model picks the next token —</span> <span class="meta-line">sampling & decoding</span> covers temperature, top-p, and what "creativity" actually means at the output layer.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Tokenization sits among the transformer, decoding, embeddings, and byte-level models">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="38"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="38"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="146"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="146"/>
+
+          <g class="node" transform="translate(62,38)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">transformers</text>
+          </g>
+          <g class="node" transform="translate(218,38)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">LLM decoding</text>
+          </g>
+          <g class="node" transform="translate(62,146)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">embeddings</text>
+          </g>
+          <g class="node" transform="translate(218,146)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">byte-level (BLT)</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">tokenization</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><span class="meta-line">The transformer · frontier</span></li>
+          <li><span class="meta-line">Sampling & decoding · frontier</span></li>
+          <li><span class="meta-line">Embeddings · frontier</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">LLMs &amp; Generative AI · fundamentals</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

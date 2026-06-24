@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Vector Search &amp; ANN — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Data &amp; Storage</span><span class="dot"></span>
+      <span>vector</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Vector Search &amp; Approximate Nearest Neighbors</h1>
+    <p class="standfirst">Finding "similar" in a billion vectors without comparing all of them — the algorithmic trick under every modern search, recommendation, and RAG system.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>You have a billion <a href="embeddings.html">embeddings</a> and a query vector. You want the 10 nearest neighbors. The brute-force answer — compute the distance from the query to every single database vector — is O(n·d): a billion dot products, each over 768 or 3072 dimensions. On a GPU, this takes seconds. In a production search system where the user expects an answer in under 100ms, it's unusable.</p>
+
+<p><span class="term">Approximate Nearest Neighbor</span> (ANN) search replaces "find the exact closest vectors" with "find vectors that are very close to the closest ones, with high probability." The approximation is the trick: you trade a tiny amount of recall (99.9% instead of 100%) for a 1000× speedup. In practice, the "approximate" in ANN rarely matters — the difference between the 10th and 11th nearest document is usually noise anyway.</p>
+
+<h2>HNSW: the navigable graph (and the algorithm that won)</h2>
+
+<div class="pull">Build a graph where edges connect nearby vectors. To search, start somewhere and greedily walk toward closer nodes. The graph navigates you to the right neighborhood in O(log n) steps.</div>
+
+<p><span class="term">Hierarchical Navigable Small World</span> (HNSW, Malkov & Yashunin, 2016) is the dominant ANN algorithm in 2026. It builds a multi-layer graph during indexing:</p>
+
+<ul>
+  <li><strong>Bottom layer (level 0):</strong> contains every vector. Highly connected — each node links to its M nearest neighbors (typically M=16–64).</li>
+  <li><strong>Higher layers (level 1, 2, …):</strong> contain progressively fewer vectors (each vector is probabilistically promoted to higher layers with an exponentially decreasing probability). Edges are longer — these are the "highways" of the graph.</li>
+</ul>
+
+<p>Search starts at the top layer's entry point. At each layer, the algorithm greedily moves to the neighbor closest to the query until it reaches a local minimum. It then descends to the next layer and repeats. The top layers provide long-range navigation (think: interstate highways); the bottom layer provides local precision (think: local streets). The result: search time scales as O(log n), not O(n).</p>
+
+<p>HNSW is the default in FAISS, the index behind Milvus, and the algorithm you activate when you set <code>index_type="HNSW"</code> in pgvector. It's not the only algorithm, but it's the one you'll reach for first.</p>
+
+<h2>Why approximate search works (and when it doesn't)</h2>
+
+<p>The quality of an ANN index is measured by <span class="term">recall@k</span>: what fraction of the true top-k results does the approximate search return? An index with recall@10 = 0.95 returns 9.5 of the true top-10 neighbors on average, missing 0.5.</p>
+
+<p>The recall-speed trade-off is a dial, not a switch. More graph edges (higher M) → higher recall, slower search, larger index. Deeper search (more candidates explored, controlled by the <code>ef_search</code> parameter) → higher recall, slower per-query. The art of tuning an ANN index is finding the M and ef_search that give you acceptable recall at your latency target.</p>
+
+<p>ANN fails gracefully in a specific way: it misses <em>isolated</em> nearest neighbors. If a query embedding happens to be very close to one specific vector that's poorly connected in the graph, the search may miss it. This is the "search didn't find the one document I knew was there" failure mode. The fix is usually higher M (more edges, harder to miss isolated nodes) or a hybrid approach: ANN for recall, then exact reranking of the top candidates.</p>
+
+<h2>The vector DB landscape: when you need more than a library</h2>
+
+<p>FAISS is a library, not a database. It gives you fast ANN search in memory, but if you need persistence, replication, metadata filtering, or multi-tenancy, you're building those yourself. The vector database adds those on top of the ANN core:</p>
+
+<ul>
+  <li><strong>Qdrant</strong> (Rust, OSS) — the strongest all-rounder in 2026: fast filtering, good performance, modest ops overhead. Default recommendation for production RAG.</li>
+  <li><strong>Milvus</strong> (Go/C++, OSS) — best at extreme scale (billions of vectors), GPU-accelerated, but demands Kubernetes expertise.</li>
+  <li><strong>Pinecone</strong> (SaaS) — easiest developer experience (API key and go), but most expensive at scale and vendor-locked.</li>
+  <li><strong>pgvector</strong> (Postgres extension) — if your vectors live alongside structured data and you want ACID transactions. Slower at pure ANN than purpose-built DBs, but the simplicity of one database for everything wins for moderate-scale workloads.</li>
+</ul>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  You build your RAG pipeline with an embedding model that produces 3072-dim vectors. Six months later, you upgrade to a model that produces 1536-dim vectors with better MTEB scores. What happens to your existing vector index?
+</div>
+
+<p>You rebuild it from scratch. Every vector in the old index is in the old model's coordinate system — 3072 dimensions with the old model's geometry. The new model's 1536-dim vectors live in a completely different space. There's no migration path. You re-embed every document with the new model, build a new index, and swap the index atomically via an alias. This is the hidden cost of the embedding-index coupling: upgrading your embedding model is a full re-index operation. Plan your pipeline accordingly — keep the raw documents, not just the vectors, because you'll need to re-embed someday.</p>
+
+<h2>Hybrid search: vectors + keywords</h2>
+
+<p>Pure vector search fails in a specific way: it misses exact matches. "Error code E10052" should match a document containing "E10052" exactly, but the embedding of "E10052" might be close to embeddings of other error codes, pulling in irrelevant results. Hybrid search fixes this: run both a dense (vector) search and a sparse (BM25 keyword) search, merge the results. Dense catches semantic similarity; sparse catches exact tokens. Fusion is typically done via reciprocal rank fusion (RRF) or a learned scorer.</p>
+
+<p>This is why the vector DB is rarely the whole story. A production RAG system in 2026 typically runs a vector index + a keyword index + a cross-encoder reranker + metadata filters. The vector search is the engine; the rest is the steering and brakes.</p>
+
+<div class="lens">
+  <span class="lens-tag">the commoditization</span>
+  Vector search is becoming a checkbox feature in existing databases, not a standalone category. PostgreSQL (pgvector), Elasticsearch, Redis, and MongoDB all ship vector search now. The pure-play vector DBs (Pinecone, Qdrant, Milvus) are competing on filtering performance, distributed scale, and developer experience — not on "we support vectors." For most teams, pgvector is the right starting point, and you graduate to a dedicated vector DB only when ANN search becomes your primary workload and you're hitting PostgreSQL's scaling limits.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The representation that makes vector search work —</span> <a href="embeddings.html">embeddings</a> produce the vectors. Read them together: embeddings are the what, vector search is the how.</p>
+        <p class="thread"><span class="lead-in">The graph behind HNSW —</span> <span class="meta-line">HNSW: the graph behind vector DBs</span> is the algorithmic deep-dive on the navigable small-world graph that powers most modern ANN indexes.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Vector search sits among embeddings, HNSW, RAG, and Milvus">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">embeddings</text>
+          </g>
+          <g class="node learned" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">RAG</text>
+          </g>
+          <g class="node" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">HNSW</text>
+          </g>
+          <g class="node" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">Milvus</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">vector search</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="embeddings.html">Embeddings</a></li>
+          <li><a href="rag.html">Retrieval-augmented generation</a></li>
+          <li><span class="meta-line">HNSW · frontier</span></li>
+          <li><span class="meta-line">Milvus · frontier</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Data &amp; Storage · vector</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

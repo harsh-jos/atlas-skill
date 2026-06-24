@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Retrieval-Augmented Generation — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>LLMs &amp; Generative AI</span><span class="dot"></span>
+      <span>patterns</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Retrieval-Augmented Generation</h1>
+    <p class="standfirst">Giving a model an open book so it stops making things up — and the pipeline that turned LLMs from a demo into a product.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>An LLM trained in 2024 doesn't know about your company's products, your customers' support tickets, or the Supreme Court ruling from last month. You could fine-tune it — expensive, slow to update, and the model still hallucinates on facts it rarely saw. You could stuff everything into the prompt — but even a 1M-token context window gets expensive and unwieldy when your knowledge base is a million documents.</p>
+
+<p><span class="term">Retrieval-Augmented Generation</span> (RAG) is the third way: at query time, retrieve the relevant documents, prepend them to the prompt, and let the model answer from the provided evidence. The model doesn't need to <em>know</em> the answer — it needs to <em>read</em> it.</p>
+
+<div class="pull">RAG separates knowing from retrieving. The retriever finds the facts. The generator reasons about them. Neither has to do the other's job.</div>
+
+<h2>The naive RAG pipeline (and why it's not enough)</h2>
+
+<p>The simplest RAG system is three steps:</p>
+
+<pre class="pre-label">Naive RAG
+1. Embed the user's query into a vector.
+2. Find the k nearest document chunks in the vector index (by cosine similarity).
+3. Stuff the top-k chunks into the prompt: "Use the following documents to answer the query..."
+4. Send to the LLM. Return the response.</pre>
+
+<p>This works well enough for a demo. It fails in production for reasons that are by now well-catalogued:</p>
+
+<ul>
+  <li><strong>Lost in the middle:</strong> LLMs attend most strongly to the beginning and end of the context. Documents in the middle of a stuffed prompt are effectively invisible. If the most relevant chunk is in position 5 of 10, the model may ignore it.</li>
+  <li><strong>Chunk boundary problems:</strong> The right answer is split across two chunks — "the CEO is" in chunk 7, "Jane Smith" in chunk 8. Retrieved individually, neither chunk answers the question.</li>
+  <li><strong>Precision vs recall tension:</strong> k=5 retrieves high-precision chunks but might miss the answer. k=50 retrieves the answer but drowns it in noise, and costs 10× more in prompt tokens.</li>
+  <li><strong>Semantic mismatch:</strong> The user asks "how do I reset my password?" The knowledge base says "password reset procedure." The embedding is close enough to retrieve the document, but the model might still hallucinate the steps if the document is ambiguous.</li>
+</ul>
+
+<h2>The RAG stack in 2026: what production teams actually build</h2>
+
+<p>The baseline has moved. A production RAG system in 2026 has several stages, each with its own knobs:</p>
+
+<ol>
+  <li><strong>Query preprocessing</strong> — Rewrite the user's query for retrieval. A short ambiguous query ("what about taxes?") gets expanded with context from the conversation history. A complex multi-part query gets decomposed into sub-queries.</li>
+
+  <li><strong>Hybrid retrieval</strong> — Run both a <strong>dense</strong> search (vector similarity via embeddings) and a <strong>sparse</strong> search (keyword match via BM25). Merge the results. Dense catches semantic similarity ("automobile" ≈ "car"); sparse catches exact matches (error codes, product SKUs, legal citations). The gain from hybrid over dense-only is consistently 15–30% in precision across benchmarks.</li>
+
+  <li><strong>Reranking</strong> — The retriever returns 50 candidate chunks (fast but coarse). A <span class="term">cross-encoder reranker</span> — a smaller, more precise model that takes the query and each chunk <em>together</em> (not separately, like the retriever) — scores the top 50 and returns the 5–10 actually most relevant. This is the highest-impact single change you can make to a RAG pipeline: reranking improves answer accuracy by 5–15% across domains.</li>
+
+  <li><strong>Context assembly</strong> — Arrange the chunks in the prompt thoughtfully, not just in retrieval-score order. Put the most relevant chunk at the beginning (where attention is strongest) and the second-most at the end (the recency bias). Strip irrelevant metadata. Add chunk citations so the model can attribute claims.</li>
+
+  <li><strong>Generation with grounding</strong> — The model answers with the instruction: "If the documents don't contain the answer, say so. Cite which document each claim comes from."</li>
+</ol>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  Your RAG pipeline retrieves 5 chunks for every query. A user asks "what's the return policy for electronics?" The retriever returns chunks about return policies for furniture, clothing, and general terms — but none about electronics specifically. The model confidently states "electronics can be returned within 30 days." The claim sounds plausible. Is it a hallucination? And what in the pipeline should have caught this?
+</div>
+
+<p>It's an <span class="term">extrinsic hallucination</span> — the model generated a claim not supported by the retrieved documents. (An <em>intrinsic</em> hallucination would be contradicting the documents; this is simply making something up that the documents don't address.) The pipeline's missing piece is <span class="term">grounding verification</span>: after generation, check each factual claim against the retrieved chunks. If the claim "electronics can be returned within 30 days" doesn't appear in any chunk, flag it or refuse to answer. This is increasingly done with a second LLM call (a "judge" or "critic" model) that compares the response sentence-by-sentence against the retrieved context. It roughly doubles the inference cost but dramatically reduces hallucination rates.</p>
+
+<h2>Chunking strategy: the unglamorous heart of RAG</h2>
+
+<p>The single most consequential implementation decision in RAG is <em>how you split documents into chunks</em>, and it's almost invisible in architecture diagrams. Chunk too small (256 tokens) and you lose context — the chunk doesn't contain enough to answer the question. Chunk too large (2048 tokens) and you dilute the retrieval signal — the embedding represents too many topics, and the chunk matches queries it can't actually answer.</p>
+
+<p>Best practices in 2026:</p>
+<ul>
+  <li><strong>Semantic chunking</strong> — split at topic boundaries (paragraph breaks, section headers) rather than fixed token counts. Use a small model or heuristics to detect when the topic changes.</li>
+  <li><strong>Overlapping windows</strong> — each chunk shares 10–20% of its tokens with the previous chunk. Mitigates the split-answer problem (the CEO's name straddles chunks 7 and 8).</li>
+  <li><strong>Parent document retrieval</strong> — index small chunks for search precision, but return the full parent document (or a larger surrounding window) for context. Best of both: precise retrieval, rich context.</li>
+</ul>
+
+<h2>When RAG is the wrong answer</h2>
+
+<div class="lens">
+  <span class="lens-tag">when not to RAG</span>
+  RAG adds latency (retrieval + reranking + prompt assembly = 100–500ms before the LLM even starts generating), cost (embeddings, vector index, reranker, extra prompt tokens), and operational complexity (you're now running a search engine and an LLM). If your knowledge base is small enough to fit in the context window (< 100K tokens), just put it in the system prompt. If your knowledge changes rarely (quarterly), pre-generate answers and serve them from a cache. If your users need creative ideation, not factual grounding, RAG is the wrong tool — it constrains the model to the retrieved documents, which is the opposite of what creativity wants. RAG is for the specific problem of "the model needs to answer questions about content it hasn't memorized, and the content changes faster than fine-tuning cycles."
+</div>
+
+<h2>The frontier: agentic RAG</h2>
+
+<p>The newest iteration: instead of a fixed pipeline, give an LLM agent tools (search, rerank, read, verify) and let it decide the retrieval strategy dynamically. A simple factual query might trigger one search with k=3. A complex analytical query might trigger multi-step retrieval: broad search → read → identify gaps → search again with refined query → synthesize across sources. Agentic RAG systems self-correct: if the initial retrieval doesn't find the answer, the agent reformulates the query and tries again. This pushes RAG from "search + summarize" toward "research + synthesize," and it's where the most active development is in mid-2026.</p>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The retrieval half of RAG —</span> <a href="embeddings.html">embeddings</a> and <span class="meta-line">vector search</span> are the engine that finds relevant documents. Read them together for the full retrieval stack.</p>
+        <p class="thread"><span class="lead-in">The discipline that replaced prompt engineering —</span> <span class="meta-line">context engineering</span> covers how to structure, prioritize, and manage what goes into the context window when the window is large enough to be its own design problem.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: RAG sits among embeddings, vector search, context engineering, and fine-tuning">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">embeddings</text>
+          </g>
+          <g class="node" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">vector search</text>
+          </g>
+          <g class="node" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">context eng.</text>
+          </g>
+          <g class="node" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">fine-tuning</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">RAG</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="embeddings.html">Embeddings</a></li>
+          <li><span class="meta-line">Vector search & ANN · frontier</span></li>
+          <li><span class="meta-line">Context engineering · frontier</span></li>
+          <li><span class="meta-line">Fine-tuning vs RAG vs prompting · frontier</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">LLMs &amp; Generative AI · patterns</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

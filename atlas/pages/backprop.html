@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Backpropagation — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Deep Learning</span><span class="dot"></span>
+      <span>training</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Backpropagation</h1>
+    <p class="standfirst">The chain rule, industrialized — how a neural network learns from its mistakes, one derivative at a time.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>You've trained a neural network. You fed it data, it made predictions, you computed a loss, and the weights updated. The magic step between "here's how wrong we were" and "here are better weights" is backpropagation. It's not a learning algorithm — it's an <em>efficient way to compute gradients</em>. But without it, training deep networks would be computationally impossible, and the deep learning revolution wouldn't have happened.</p>
+
+<p>At its core, backpropagation is one idea from high school calculus applied with a specific computational pattern. The idea is the chain rule. The pattern is that you compute once and reuse.</p>
+
+<h2>Why forward-mode differentiation doesn't scale</h2>
+
+<p>Say you have a function f(x, y) = (x + y) × (x − y). You want the partial derivatives ∂f/∂x and ∂f/∂y. With <span class="term">forward-mode</span> autodiff, you track how a small change in one input propagates through the computation. For each input you want the gradient with respect to, you do a full forward pass. A neural network has millions or billions of inputs (the weights). Forward-mode would require one pass per weight. That's non-starter territory.</p>
+
+<p><span class="term">Reverse-mode</span> autodiff — which is what backpropagation is — starts from the output and works backward, propagating the gradient of the loss with respect to each intermediate value. One reverse pass gives you the gradient with respect to <em>every</em> input simultaneously. For a network with n parameters, forward-mode costs O(n) forward passes; reverse-mode costs one forward pass plus one backward pass. The backward pass is about 2–3× the cost of the forward pass. This is the computational miracle that makes training deep networks feasible.</p>
+
+<h2>The chain rule, at scale</h2>
+
+<p>Consider a tiny two-layer network:</p>
+
+<pre>Input x ──→ [W₁] ──→ a₁ = W₁x    ──→ [ReLU] ──→ h₁ = max(0, a₁) ──→ [W₂] ──→ ŷ = W₂h₁
+                                                                          │
+                                                                   loss = (ŷ - y)²</pre>
+
+<p>The loss depends on W₂ through ŷ, and on W₁ through a₁ → h₁ → ŷ. The chain rule gives us:</p>
+
+<pre>∂loss/∂W₂ = ∂loss/∂ŷ · ∂ŷ/∂W₂                           (direct path)
+∂loss/∂W₁ = ∂loss/∂ŷ · ∂ŷ/∂h₁ · ∂h₁/∂a₁ · ∂a₁/∂W₁        (through the whole chain)</pre>
+
+<p>The key efficiency: notice that ∂loss/∂ŷ appears in both expressions. The backward pass computes ∂loss/∂ŷ <em>once</em>, then reuses it. At each layer, backprop computes the <span class="term">local gradient</span> (how this layer's output depends on its input) and multiplies it by the <span class="term">upstream gradient</span> (the gradient of the loss with respect to this layer's output). This product becomes the upstream gradient for the previous layer.</p>
+
+<pre class="pre-label">The backward pass, layer by layer
+G = ∂loss/∂ŷ                     # upstream gradient starts at the loss
+
+# Layer 2 (the output layer):
+∂loss/∂W₂ = G · ∂ŷ/∂W₂           # gradient for W₂'s update
+G = G · ∂ŷ/∂h₁                    # new upstream gradient for layer 1
+
+# Layer 1 (the hidden layer):
+∂loss/∂W₁ = G · ∂h₁/∂a₁ · ∂a₁/∂W₁  # gradient for W₁'s update</pre>
+
+<p>Each layer only needs to know two things: how to compute its own local gradient (the <em>backward</em> function), and the upstream gradient it received. It passes the product backward and the chain rule does the rest. This is why frameworks like PyTorch and JAX only need you to define the forward pass — they can trace the computation graph and derive the backward pass automatically.</p>
+
+<h2>The computation graph is the secret</h2>
+
+<div class="pull">Every mathematical expression is a directed acyclic graph. Backprop is just a traversal of that graph in reverse topological order.</div>
+
+<p>When you write <code>y = W2 @ relu(W1 @ x)</code>, PyTorch doesn't execute it directly. It builds a computation graph — a DAG where nodes are operations (matrix multiply, ReLU, add) and edges are the data flowing between them. During the forward pass, each node stores any intermediate values it'll need for the backward pass (this is why you need more memory during training than inference — those stored intermediate activations, called the <span class="term">activation checkpoint</span> or "saved tensors").</p>
+
+<p>During the backward pass, the graph is traversed from the loss node backward to the input nodes. Each node receives the gradient of the loss with respect to its <em>outputs</em> and computes the gradient with respect to its <em>inputs</em>. By the time the traversal reaches the weight nodes, you have ∂loss/∂W for every parameter in the network.</p>
+
+<p>This is also why backprop requires differentiable operations. The backward function for ReLU is simple: ∂max(0, x)/∂x = 1 if x &gt; 0, 0 otherwise. For matrix multiply, it's a transpose multiply. For cross-entropy loss with softmax, the backward pass simplifies to a surprisingly clean <code>ŷ − y</code> (predicted minus true). Every operation in a neural network needs a defined backward function. If you've ever seen <code>No gradient defined for operation</code>, it means you used something in the forward pass that the framework doesn't know how to differentiate through.</p>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  A ReLU unit outputs 0 for every input in a batch. What's the gradient of the loss with respect to its input weights? Before reading on: what does this mean for those weights, and is it a bug or a feature?
+</div>
+
+<p>The gradient is 0. The ReLU's backward function returns 0 for any input ≤ 0, so the upstream gradient is multiplied by 0, and the weights feeding that neuron get zero update. This is the <span class="term">dying ReLU</span> problem: once a ReLU neuron receives a large negative gradient that pushes its weights into a region where it always outputs 0, it never recovers — it's permanently dead, contributing nothing to the network. It's a bug in the sense that it reduces capacity, but it's also why variants like Leaky ReLU (small positive slope for negative inputs), PReLU (learnable slope), and GELU (smooth approximation, used in transformers) exist. The GELU in your transformer is, at its heart, "ReLU but we fixed the dying problem."</p>
+
+<h2>Why this took decades to matter</h2>
+
+<p>Backpropagation was derived in the 1960s (in the control theory community), rediscovered in the 1970s, and made famous by Rumelhart, Hinton, and Williams in 1986. Deep learning didn't take off until 2012. What changed wasn't the algorithm — it was three things backprop needs to work well:</p>
+
+<ol>
+  <li><strong>Enough data.</strong> Backprop computes gradients from data. With small datasets, the gradients are noisy and the optimization surface is treacherous. ImageNet (2009) gave the field a large enough dataset.</li>
+  <li><strong>Enough compute.</strong> GPUs turned the backward pass from "wait overnight" to "a few seconds." The backward pass is mostly matrix multiplies, which GPUs excel at.</li>
+  <li><strong>Better initialization and normalization.</strong> If your initial weights produce activations that saturate (gradients → 0) or explode (gradients → ∞), backprop can't get a useful signal through. Xavier/Glorot initialization (2010) and BatchNorm (2015) fixed the signal propagation problem, making it possible to train networks deeper than ~10 layers.</li>
+</ol>
+
+<p>Backprop is a beautiful algorithm, but it was waiting on infrastructure for 25 years. The algorithm wasn't the bottleneck — everything around it was.</p>
+
+<div class="lens">
+  <span class="lens-tag">the memory cost</span>
+  Backprop's dirty secret is memory. To compute the gradient through a layer, you need the layer's forward-pass activations. For a transformer with a 2048-token context, that's gigabytes of intermediate tensors. Gradient checkpointing trades compute for memory: instead of storing all activations, store a few and recompute the rest during the backward pass. This roughly doubles the backward-pass FLOPs but cuts memory by O(√n). Most large-model training uses it. It's a reminder that backprop's O(1)-pass gradient computation is a time win, not a memory win — and when memory is the scarcer resource, you trade time back.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The downhill walk that backprop supplies gradients for —</span> <a href="gradient-descent.html">gradient descent</a> is the optimizer that uses backprop's gradients to actually update the weights.</p>
+        <p class="thread"><span class="lead-in">What are we minimizing, exactly? —</span> <span class="meta-line">loss functions</span> are the target backprop differentiates. The choice of loss encodes everything you care about.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Backprop sits among gradient descent, loss functions, regularization, and the transformer">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">grad. descent</text>
+          </g>
+          <g class="node" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">loss fns</text>
+          </g>
+          <g class="node" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">regularization</text>
+          </g>
+          <g class="node" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">transformers</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">backprop</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="gradient-descent.html">Gradient descent</a></li>
+          <li><span class="meta-line">Loss functions · frontier</span></li>
+          <li><span class="meta-line">Dropout, BatchNorm & friends · frontier</span></li>
+          <li><span class="meta-line">The transformer · frontier</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Deep Learning · training</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

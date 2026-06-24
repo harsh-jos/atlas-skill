@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The Transformer — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Deep Learning</span><span class="dot"></span>
+      <span>architectures</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">The Transformer</h1>
+    <p class="standfirst">The architecture behind essentially every modern language model — and the paper title that became a self-fulfilling prophecy.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>In 2017, eight researchers at Google published a paper called "Attention Is All You Need." The title was a claim: you could replace the entire machinery of recurrent and convolutional neural networks with attention alone. At the time, it was a bold hypothesis about machine translation. Within five years, the architecture described in that paper — the <span class="term">Transformer</span> — had displaced every competitor in language modeling, then image recognition, then audio processing, then protein folding. The paper has been cited over 150,000 times. "Attention is all you need" turned out to be less a claim and more a prophecy.</p>
+
+<div class="pull">A transformer is a stack of identical blocks, each containing a multi-head self-attention layer and a feed-forward network, with careful normalization and residual connections so the whole thing can be trained deeply.</div>
+
+<h2>The block, dissected</h2>
+
+<p>Every transformer layer is the same pattern, repeated N times (N = 12 for BERT-base, 96 for GPT-3, 120 for the largest Llama 4 models):</p>
+
+<pre class="pre-label">One transformer block
+Input: x (a matrix of [seq_len × d_model])
+
+1. x_norm = LayerNorm(x)                    # pre-norm (modern variant)
+2. attn_out = MultiHeadAttention(x_norm)     # self-attention
+3. x = x + attn_out                          # residual connection
+4. x_norm2 = LayerNorm(x)                    # second norm
+5. ff_out = FeedForward(x_norm2)             # position-wise FFN
+6. x = x + ff_out                            # residual connection
+
+Output: x (same shape as input)</pre>
+
+<p>Four design decisions that turn out to matter enormously:</p>
+
+<p><strong>1. Self-attention, not cross-attention.</strong> In the original transformer (encoder-decoder for translation), the decoder attended to the encoder's output. Modern language models use <em>decoder-only</em> architectures: the model attends only to previous positions (causal masking). This lets you train on all positions in parallel (the mask prevents cheating) and generate one token at a time autoregressively. GPT, Claude, Llama, Gemini, DeepSeek — all decoder-only transformers.</p>
+
+<p><strong>2. Residual connections.</strong> The <code>x = x + sublayer(x)</code> pattern means each sublayer learns the <em>residual</em> — the change from the input, not the full transformation. This prevents gradients from vanishing as they propagate through many layers, enabling networks to be much deeper than they otherwise could be. Without residuals, transformers deeper than ~6 layers collapse during training.</p>
+
+<p><strong>3. Layer normalization.</strong> Normalizing activations within each layer stabilizes training. The original paper used <em>post-norm</em> (normalize after attention + residual). Modern transformers use <em>pre-norm</em> (normalize before attention) — it's more stable and allows larger learning rates. This small swap is invisible in architecture diagrams but was worth several percentage points of training stability.</p>
+
+<p><strong>4. Position-wise feed-forward.</strong> The FFN is the same small two-layer network applied independently to each position. After attention mixes information <em>across</em> positions, the FFN processes each position's enriched representation. Together, they do what convolutions and recurrences did in older architectures — mix, then transform — but more efficiently.</p>
+
+<h2>The decoder-only transformer (everything you use in 2026)</h2>
+
+<p>The encoder-decoder split of the original paper has mostly been abandoned. Modern LLMs use a decoder-only architecture:</p>
+
+<pre class="pre-label">Decoder-only transformer (GPT-style)
+Token embeddings → [Transformer Block] × N → LM head → next-token probabilities
+
+At generation time:
+  Input:  "The cat sat on"
+  Output: "The cat sat on the"
+  → feed back: "The cat sat on the"
+  Output: "The cat sat on the mat"
+  → repeat until <EOS></pre>
+
+<p>Causal (masked) self-attention means position i can only attend to positions 0..i. At generation time, each new token only needs to compute attention against tokens already generated, so you can cache the keys and values of previous positions (the <span class="term">KV cache</span>) and only compute the new token's contribution. This is why generation is fast once the prompt is processed: each new token costs roughly one forward pass through the network, not the O(n²) full attention recomputation the naive approach would suggest.</p>
+
+<h2>Why the transformer beat everything</h2>
+
+<p>The transformer's dominance isn't because attention is magical — it's because the architecture is <em>hardware-friendly</em>. Almost all the computation is matrix multiplies and pointwise operations. Matrix multiplies are what GPUs and TPUs do best. An RNN is a loop with a data dependency (step N depends on step N−1), making it hard to parallelize. A transformer processes all positions at once, turning sequence processing into a batched matmul that saturates the GPU's tensor cores.</p>
+
+<p>The transformer also scales <em>predictably</em>. The Kaplan et al. (2020) and Hoffmann et al. (2022, Chinchilla) scaling laws showed that transformer loss improves as a smooth power law with model size, dataset size, and compute. You can predict how good a model will be before training it. That predictability is why companies bet hundreds of millions of dollars on larger training runs — they're not guessing.</p>
+
+<h2>The transformer ecosystem</h2>
+
+<p>The same architecture, with small modifications, serves very different purposes:</p>
+
+<ul>
+  <li><strong>Encoder-only (BERT, RoBERTa):</strong> Bidirectional attention over the full input. Good for understanding tasks — classification, NER, embedding. Not for generation.</li>
+  <li><strong>Decoder-only (GPT, Claude, Llama):</strong> Causal attention. Good for generation. This is what "LLM" means in 2026.</li>
+  <li><strong>Encoder-decoder (T5, BART):</strong> Bidirectional encoder + causal decoder. Good for sequence-to-sequence tasks (translation, summarization). Mostly a research curiosity now; the decoder-only models do these tasks fine with instruction tuning.</li>
+  <li><strong>Vision Transformer (ViT):</strong> Split an image into patches, treat each patch as a "token," apply a transformer. Works remarkably well — transformers in vision now match or exceed CNNs.</li>
+</ul>
+
+<div class="lens">
+  <span class="lens-tag">the next thing?</span>
+  The transformer's O(n²) attention cost is the active criticism. State-space models (Mamba, S4) replace attention with a recurrent computation that's O(n) and can still be parallelized during training. RWKV combines RNN-style recurrence with transformer-style training parallelism. These aren't yet displacing transformers at the frontier, but they're credible challengers — especially for long-context workloads where quadratic attention is genuinely prohibitive. The transformer may not be the final architecture, but its organizing ideas — self-attention for mixing, residuals for depth, normalization for stability — will persist in whatever replaces it.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The attention mechanism inside —</span> <a href="attention.html">attention</a> is the engine in every transformer block. If that page is still on your frontier, it's the logical next stop.</p>
+        <p class="thread"><span class="lead-in">How tokens become inputs —</span> <a href="tokenization.html">tokenization & BPE</a> is the preprocessing step that turns raw text into the integer sequence the transformer actually receives.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: The transformer sits among attention, tokenization, LLM decoding, backprop, and embeddings">
+          <line class="edge active" x1="140" y1="92" x2="48"  y2="38"/>
+          <line class="edge active" x1="140" y1="92" x2="180" y2="32"/>
+          <line class="edge active" x1="140" y1="92" x2="232" y2="44"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="150"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="150"/>
+
+          <g class="node learned" transform="translate(48,38)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">attention</text>
+          </g>
+          <g class="node learned" transform="translate(180,32)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">tokenization</text>
+          </g>
+          <g class="node" transform="translate(232,44)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">decoding</text>
+          </g>
+          <g class="node learned" transform="translate(62,150)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">backprop</text>
+          </g>
+          <g class="node learned" transform="translate(218,150)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">embeddings</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">transformer</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="attention.html">Attention</a></li>
+          <li><a href="tokenization.html">Tokenization & BPE</a></li>
+          <li><span class="meta-line">Sampling & decoding · frontier</span></li>
+          <li><a href="backprop.html">Backpropagation</a></li>
+          <li><a href="embeddings.html">Embeddings</a></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Deep Learning · architectures</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

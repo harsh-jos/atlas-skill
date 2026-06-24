@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RLHF &amp; Preference Tuning — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>LLMs &amp; Generative AI</span><span class="dot"></span>
+      <span>alignment</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">RLHF &amp; Preference Tuning</h1>
+    <p class="standfirst">How a raw text predictor becomes an assistant that follows instructions — the alignment step that separates base models from the ones you actually use.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>A base language model trained on the internet knows how to complete text. It does not know how to be helpful, harmless, or honest. If you ask it "how do I make a bomb?" it will complete that text — not because it's evil, but because "text completion" doesn't include the concept of "refuse harmful requests." Teaching the model which completions humans <em>prefer</em> is the alignment step, and RLHF is how every frontier model does it.</p>
+
+<p><span class="term">RLHF</span> (Reinforcement Learning from Human Feedback) is the three-stage process that turns a base model into an assistant:</p>
+
+<ol>
+  <li><strong>Supervised Fine-Tuning (SFT):</strong> Collect demonstrations of desired behavior (human-written or model-generated + human-edited prompt-response pairs). Fine-tune the base model on these. The model learns the <em>format</em> of instruction-following: what a response to a user request looks like.</li>
+
+  <li><strong>Reward Model Training:</strong> For a given prompt, generate multiple responses. Have humans rank them (A > B > C > D). Train a reward model to predict the human ranking. The reward model is a copy of the SFT model with a regression head instead of a language-modeling head — it outputs a scalar score instead of a token distribution.</li>
+
+  <li><strong>RL Fine-Tuning (PPO):</strong> Use the reward model as a reward function. The policy (SFT model) generates responses; the reward model scores them; PPO (Proximal Policy Optimization) updates the policy to maximize the reward while staying close to the SFT model (via KL divergence penalty — the model shouldn't drift so far that it loses language coherence).</li>
+</ol>
+
+<div class="pull">RLHF doesn't teach the model new facts. It teaches it which facts are appropriate to share and how to say "I don't know" when it doesn't.</div>
+
+<h2>DPO: the simpler alternative that took over</h2>
+
+<p>RLHF with PPO is complex: you need a separate reward model, you need to keep it in sync with the policy, and PPO training is notoriously finicky. <span class="term">DPO</span> (Direct Preference Optimization, Rafailov et al., 2023) eliminates the reward model entirely. It reparameterizes the RLHF objective so that the optimal policy can be expressed directly in terms of the preference data, without an explicit reward function. Training DPO looks like supervised fine-tuning: you have a dataset of (prompt, chosen_response, rejected_response) triples, and the loss function encourages the model to assign higher probability to the chosen response than the rejected one.</p>
+
+<pre class="pre-label">RLHF vs DPO complexity
+RLHF:  SFT model → train reward model → train policy with PPO → deploy
+DPO:   SFT model → train directly on preference pairs → deploy</pre>
+
+<p>DPO has become the default alignment method for most teams in 2025–2026. It's simpler, more stable, and achieves comparable results to PPO-based RLHF on most benchmarks. PPO is still used when the reward is complex, non-differentiable, or comes from a system external to the model (e.g., a code execution sandbox that returns pass/fail, or a human-in-the-loop feedback system).</p>
+
+<h2>GRPO: RL without the critic</h2>
+
+<p>The newest addition to the alignment toolbox: <span class="term">GRPO</span> (Group Relative Policy Optimization, DeepSeek, 2024). Instead of training a separate value function (critic), GRPO samples multiple responses per prompt, scores them all with the reward model, and uses the group's mean and standard deviation to normalize rewards. This eliminates the critic — a major simplification — while preserving RL's ability to optimize non-differentiable rewards. GRPO was used in DeepSeek-R1's training and is the recommended method for reasoning tasks with verifiable rewards (math problems where the answer can be checked, code generation where tests can be run).</p>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  You train a reward model on human preferences. Your raters consistently prefer longer, more confident-sounding responses — even when they're wrong. What property of your aligned model breaks, and what's the data fix?
+</div>
+
+<p>The model becomes <span class="term">sycophantic</span> — confidently wrong, preferring to sound authoritative rather than admit uncertainty. The data fix: explicitly include "I don't know" and uncertainty-expressing responses in the preference data, and ensure they're ranked above confident-but-wrong responses. Some teams add a "honesty bonus" to the reward function. The deeper fix: have raters evaluate factual correctness (not just perceived helpfulness), which is expensive (requires domain experts) but produces a reward model that actually values truth. The reward model learns what you measure. If you measure "which response looks better," it learns style over substance. If you measure "which response is correct," it learns accuracy.</p>
+
+<div class="lens">
+  <span class="lens-tag">the alignment tax</span>
+  RLHF makes models safer and more helpful. It also makes them <em>less capable</em> on some dimensions — the "alignment tax." A base model might score higher on scientific reasoning benchmarks than its RLHF'd version because the base model learned scientific patterns from papers and the RLHF process (with raters who aren't domain experts) inadvertently penalized the terse, technical style of scientific writing. The alignment tax is shrinking as alignment techniques improve, but it's not zero. The honest trade: RLHF trades some raw capability for safety and usability. For a model that serves the public, that trade is non-negotiable. For a model that serves researchers solving protein folding, you might prefer the base model.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The SFT step before alignment —</span> <a href="fine-tuning.html">fine-tuning vs RAG vs prompting</a> covers supervised fine-tuning, which is step 1 of RLHF and often sufficient on its own for narrow tasks.</p>
+        <p class="thread"><span class="lead-in">The loss function RLHF replaces —</span> <a href="loss-functions.html">loss functions</a> explains the cross-entropy objective of base model training; RLHF adds a preference-based reward on top.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: RLHF sits among fine-tuning, loss functions, LLM evals, and context engineering">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">fine-tuning</text>
+          </g>
+          <g class="node learned" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">loss fns</text>
+          </g>
+          <g class="node" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">LLM evals</text>
+          </g>
+          <g class="node learned" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">context eng.</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">RLHF</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="fine-tuning.html">Fine-tuning vs RAG vs prompting</a></li>
+          <li><a href="loss-functions.html">Loss functions</a></li>
+          <li><span class="meta-line">Evaluating LLM systems · frontier</span></li>
+          <li><a href="context-engineering.html">Context engineering</a></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">LLMs &amp; Generative AI · alignment</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

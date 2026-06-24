@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The Actor Model — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Concurrency &amp; Parallelism</span><span class="dot"></span>
+      <span>models</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">The Actor Model</h1>
+    <p class="standfirst">Concurrency as mailboxes and messages instead of shared memory — the model that Erlang, Akka, and Orbit turned into systems that stay up for years.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>Shared-memory concurrency — threads, <a href="locks.html">locks</a>, <a href="atomics.html">atomics</a> — is local-first: it's designed for one machine, one address space. The actor model (Hewitt, Bishop & Steiger, 1973) inverts this: concurrency is about independent entities communicating via messages. There is no shared memory. Actors don't read each other's state. They send messages. The model was designed for distributed systems before distributed systems were the default, and it took 30 years to become necessary.</p>
+
+<div class="pull">An actor is a computational entity with a mailbox. It receives messages one at a time, processes each to completion, and can send messages to other actors or create new ones. Nothing else can touch its state.</div>
+
+<h2>The three rules</h2>
+
+<ol>
+  <li><strong>Process one message at a time.</strong> An actor's state is private. No locks, no atomics, no concurrent modification — because only one message is ever being processed per actor at any moment.</li>
+  <li><strong>Communicate only by message.</strong> Actors don't call each other's methods. They send messages to addresses (mailboxes). The caller doesn't know whether the receiver is on the same machine or a different continent — the model is location-transparent by design.</li>
+  <li><strong>Failure is a message.</strong> Actors supervise other actors. If a child actor crashes, its supervisor receives a failure message and can decide: restart the child, escalate the failure, or do nothing. This is the <span class="term">let it crash</span> philosophy — don't program defensively for every possible failure; program the recovery.</li>
+</ol>
+
+<h2>Erlang: the actor model in production for 30 years</h2>
+
+<p>Erlang (Ericsson, 1986) is the canonical actor language and the proof that the model works at scale. Ericsson's telephone switches — running millions of Erlang processes (actors) — achieved nine nines of availability (99.9999999%, or ~32ms downtime per year). Not because Erlang code doesn't have bugs, but because the supervision hierarchy catches them, restarts the affected actor, and the rest of the system keeps running.</p>
+
+<p>An Erlang process is not an OS thread — it's a lightweight green thread (a few KB of memory, microseconds to create). A single Erlang VM can run millions of processes. Each process has a mailbox (a queue of messages). The VM's scheduler preempts processes at function-call boundaries (reduction counting), so a CPU-bound process can't starve others. This is similar to <a href="async-models.html">Go's goroutines or Java's virtual threads</a>, but with a crucial difference: Erlang processes cannot share memory. The only way to share data is to send a message. This eliminates an entire class of concurrency bugs — data races — at the language level.</p>
+
+<h2>Akka and the JVM adaptation</h2>
+
+<p>Akka (2009, now part of the Lightbend ecosystem) brought the actor model to the JVM. Akka actors are objects with mailboxes, running on a thread pool. The key innovation: Akka actors are location-transparent — an actor reference can point to an actor on the same JVM or a remote one, and message sending looks the same. This made Akka the standard for building distributed systems on the JVM, used by LinkedIn, PayPal, and Intel.</p>
+
+<p>Akka's 2022 licensing change (moving from Apache 2.0 to the Business Source License) caused a fork: Apache Pekko, which continues the Apache 2.0 lineage. Both are in active use in 2026.</p>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  Actor A sends a message to Actor B, then sends a message to Actor C. Actor B receives A's message, does some work, and sends a message to C. Actor C receives both messages. What ordering does C observe?
+</div>
+
+<p>No guaranteed ordering. A's message to C and B's message to C are sent by different actors and arrive independently. C might receive B's message first (if B is faster) or A's message first. The only ordering guarantee in the actor model: messages from the same sender to the same receiver are delivered in order. A → C messages are ordered relative to each other. B → C messages are ordered relative to each other. But A → C and B → C messages have no ordering relationship. If C's logic requires that it process A's message before B's, the ordering must be enforced by the application (e.g., A sends to C, C sends back an acknowledgment, B waits for the acknowledgment before sending to C — which reintroduces coupling).</p>
+
+<div class="lens">
+  <span class="lens-tag">when the actor model shines</span>
+  The actor model is at its best when the problem naturally decomposes into independent entities that communicate — chat servers (each user is an actor), IoT device fleets (each device is an actor), game servers (each player is an actor). It's at its worst when the problem requires strong consistency across actors — a bank transfer from account A to account B requires coordination between two actors, and the actor model doesn't provide transactions. Systems that need cross-actor consistency end up building it on top of actors (sagas, two-phase commit), which is where the complexity of the actor model lives. The model gives you isolation per actor for free. Cross-actor consistency is all on you.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The other concurrency models —</span> <a href="async-models.html">event loops vs threads vs coroutines</a> compares the actor model to the alternatives: when is "mailbox" better than "mutex"?</p>
+        <p class="thread"><span class="lead-in">The queue that actors depend on —</span> <a href="queues.html">queues as a design tool</a> explains why the mailbox abstraction is powerful even outside the actor model.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: The actor model sits among async models, queues, locks, and event sourcing">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">async models</text>
+          </g>
+          <g class="node learned" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">queues</text>
+          </g>
+          <g class="node learned" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">locks</text>
+          </g>
+          <g class="node learned" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">event src.</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">actor model</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="async-models.html">Event loops vs threads vs coroutines</a></li>
+          <li><a href="queues.html">Queues as a design tool</a></li>
+          <li><a href="locks.html">Locks, deadlock & livelock</a></li>
+          <li><a href="event-sourcing.html">Event sourcing & CQRS</a></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Concurrency &amp; Parallelism · models</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

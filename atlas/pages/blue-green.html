@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Blue-Green &amp; Canary Deploys — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Engineering Practice</span><span class="dot"></span>
+      <span>delivery</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Blue-Green &amp; Canary Deploys</h1>
+    <p class="standfirst">Shipping to some users first, and rolling back before anyone notices — the deploy patterns that turn releases from an event into a dial.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>A traditional deploy replaces the old version with the new version. If the new version breaks, you're broken for everyone until rollback completes. Rollback typically takes as long as deploy — minutes to tens of minutes — during which users see errors. The deployment is a binary risk: you're either fine or you're down.</p>
+
+<p>Blue-green and canary deploys are the two patterns that eliminate this binary risk by running both versions simultaneously and shifting traffic between them. The difference is <em>how quickly</em> you shift.</p>
+
+<h2>Blue-green: swap everything at once</h2>
+
+<p>In a blue-green deploy, you have two complete environments: <strong>blue</strong> (current production) and <strong>green</strong> (new version). You deploy the new version to green, run smoke tests against it, then flip a load balancer to send all traffic to green. If green fails, flip back to blue. Rollback is a load balancer change — seconds, not minutes.</p>
+
+<div class="pull">Blue-green: deploy to an idle environment, test it, then swap. Rollback is instant because the old environment is still running.</div>
+
+<p>The cost: you need double the infrastructure during deploys. For a 100-server fleet, you need 100 servers for blue and 100 for green — briefly, during the cutover. In cloud environments, this is a cost-optimization problem (spin up green, test, swap, spin down blue — you only double-pay for ~30 minutes). In on-premise environments with fixed capacity, it's a harder constraint.</p>
+
+<p>The other cost: database schema changes must be compatible with both versions. If the new version adds a column, the old version must still work with the new schema (or the schema change must happen before the deploy, in a separate migration). This is the <span class="term">expand-contract</span> pattern: expand the schema to support both versions, deploy the new code (which uses the new schema), then contract by removing support for the old schema once the old code is gone. Blue-green deploys force this discipline, which is a feature — schema changes that break the running version are also schema changes that make rollback impossible.</p>
+
+<h2>Canary: shift traffic gradually</h2>
+
+<p>A canary deploy shifts a small percentage of traffic to the new version and monitors it before shifting more. The progression: 1% → 5% → 25% → 100%, with automated checks at each step. If the canary's error rate, latency, or business metrics deviate from baseline, the deploy is automatically halted and traffic shifts back to the old version.</p>
+
+<p>The name comes from coal mining: miners carried canaries into tunnels because the birds were more sensitive to toxic gases. If the canary died, the miners evacuated. In software, if the canary instances start returning 500s, the deploy is aborted before 99% of users are affected.</p>
+
+<p>Canary deploys require more infrastructure sophistication than blue-green: the load balancer (or service mesh) must support fractional traffic splitting, the monitoring system must compare canary metrics to baseline in real time, and the deploy pipeline must automate the progression and rollback. Tools: Argo Rollouts (Kubernetes native), Spinnaker, AWS CodeDeploy, and service meshes (Istio, Linkerd) that can split traffic at the request level.</p>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  You canary-deploy a backend change: 5% of traffic to the new version. The canary's p99 latency is 200ms — identical to baseline (205ms). You promote to 100%. Suddenly, latency spikes to 2 seconds. The canary looked fine. What happened?
+</div>
+
+<p>The new code path hits a database query that's fine at 5% load but saturates a connection pool at 100% load. The canary detected <em>code</em> correctness (the new version responds correctly) but not <em>capacity</em> correctness (the new version uses resources differently at scale). The mitigation: canary deploys need both correctness signals (error rate, response validity) and capacity signals (CPU per request, database connections per request, cache hit rate). A canary at 5% traffic should project to 100% — if the new version uses 2× the database connections per request, that's visible at 5% if you're measuring per-request resource consumption. This is also why <a href="chaos-engineering.html">chaos engineering</a> and canary deploys are complementary — chaos tests capacity under failure, canaries test capacity under normal load.</p>
+
+<h2>When to use which</h2>
+
+<ul>
+  <li><strong>Blue-green:</strong> Stateless services where the deploy is fast (minutes), the infrastructure cost of double capacity is acceptable, and the rollback must be instant. Good for API servers, static frontends, and any service where "revert to the previous version" is a sufficient rollback strategy.</li>
+  <li><strong>Canary:</strong> Services where the blast radius of a bad deploy is unacceptable and you want to measure the new version under real traffic before committing. Good for payment processing, authentication, and any service where "a few users saw errors" is preferable to "everyone saw errors."</li>
+  <li><strong>Both (canary within blue-green):</strong> Deploy to a green environment, canary within green (shift 1% of total traffic to green), then swap 100% to green when the canary succeeds. This gives you instant rollback via blue-green and gradual validation via canary.</li>
+</ul>
+
+<div class="lens">
+  <span class="lens-tag">the database problem</span>
+  Both patterns assume the hard part is the application code. The database is the hard part. Blue-green requires both versions to work with the same database schema (or at least compatible schemas). Canary requires both versions to write data that both versions can read. A canary that writes data in a new format (a new required field, a changed enum value) means the old version can't process that data — and at 5% canary, 5% of your data is now in a format the old version can't read. The fix: <span class="term">forward-compatible schema changes</span>. New fields are optional. Enum values are added, not changed. The old version ignores what it doesn't understand. This is a database design discipline, not a deploy tooling feature.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The feature-level counterpart —</span> <a href="feature-flags.html">feature flags</a> decouple deploy from release at the code level, while blue-green and canary do it at the infrastructure level.</p>
+        <p class="thread"><span class="lead-in">The verification that proves it works —</span> <a href="chaos-engineering.html">chaos engineering</a> tests how the system handles failure; canary deploys test how it handles success at scale.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Blue-green deploys sit among feature flags, chaos engineering, twelve-factor, and SLOs">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">feature flags</text>
+          </g>
+          <g class="node learned" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">chaos eng.</text>
+          </g>
+          <g class="node" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">twelve-factor</text>
+          </g>
+          <g class="node learned" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">SLOs</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">blue-green</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="feature-flags.html">Feature flags</a></li>
+          <li><a href="chaos-engineering.html">Chaos engineering</a></li>
+          <li><span class="meta-line">Twelve-factor app · frontier</span></li>
+          <li><a href="slo.html">SLIs, SLOs & error budgets</a></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Engineering Practice · delivery</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

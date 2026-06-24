@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Logs, Metrics &amp; Traces — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Engineering Practice</span><span class="dot"></span>
+      <span>operations</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Logs, Metrics &amp; Traces</h1>
+    <p class="standfirst">The three signals you need to understand a running system — and why you keep reaching for the wrong one.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>It's 2 AM. Something is wrong — users are seeing timeouts, and you don't know why. You open Grafana. You open Kibana. You open Jaeger. Three tools, three signals, and the first thing you learn about observability is that you're going to need all three, because they answer fundamentally different questions.</p>
+
+<p>The industry has converged on three pillars. The convergence took a decade and the pillars aren't really pillars — they're projections of the same underlying data, viewed at different resolutions — but the distinction is useful enough that it's now wired into every observability tool and, since 2026, into a single CNCF-graduated standard called <span class="term">OpenTelemetry</span>.</p>
+
+<h2>Logs: "what happened at this exact moment?"</h2>
+
+<p>A log is a timestamped, unstructured (or semi-structured) string emitted by your application at a point in time. It's the oldest of the three signals and the one you reach for when debugging a specific request that went wrong.</p>
+
+<pre class="pre-label">A log line, more or less
+[2026-06-21T02:17:23.421Z] ERROR payment-service order=12345 "timeout connecting to Stripe after 5000ms"</pre>
+
+<p>Logs are <em>high-resolution in time</em> — they tell you exactly what happened and when — but <em>low-resolution in structure</em>. They're strings, not data. Aggregating across thousands of log lines to answer "how many payment timeouts happened in the last hour?" means parsing strings, and parsing strings at scale is slow and fragile.</p>
+
+<p>The best thing that happened to logs in the last decade was <span class="term">structured logging</span>: instead of a prose string, emit a JSON object with typed fields. The line above becomes <code>{"ts":"...","level":"error","service":"payment","order_id":12345,"msg":"timeout connecting to Stripe","duration_ms":5000}</code>. Now your log aggregator (Loki, Elasticsearch, ClickHouse) can index the fields, and "how many timeouts" becomes a fast count query instead of a regex scan.</p>
+
+<p>Logs are cheap to emit, expensive to store, and indispensable when you have a specific request ID and need to see exactly what happened to it. They're the wrong tool when you need to see the shape of the whole system.</p>
+
+<h2>Metrics: "how much, how fast, how often?"</h2>
+
+<p>A metric is a named number with labels attached. Unlike a log, which records a single event, a metric is an <em>aggregate</em> — a counter, a gauge, a histogram — computed over a time window.</p>
+
+<pre class="pre-label">Metrics, as Prometheus would see them
+http_requests_total{method="POST", path="/pay", status="200"} 1,247,831
+http_request_duration_seconds{path="/pay", quantile="0.99"}    1.2</pre>
+
+<p>Metrics are <em>low-resolution in time</em> (they're pre-aggregated into buckets) but <em>high-resolution in scale</em>. You can graph the P99 latency of your payment endpoint over the last 30 days with a single query, because the numbers are already reduced. A log-based answer to the same question would require scanning and parsing terabytes of text.</p>
+
+<p>The trade is that metrics can't tell you <em>why</em> a specific request was slow — only that 1% of them were. They're the first thing you check (is the system healthy?) and the last thing you check (did the fix change the numbers?), but they're rarely sufficient in the middle.</p>
+
+<p>The standard stack for metrics is Prometheus (collects, stores, queries) plus Grafana (dashboards, alerts). Prometheus pulls metrics from your services via an HTTP endpoint (usually <code>/metrics</code>), stores them in a time-series database, and provides PromQL — a query language designed for operating on time series. The data model is simple and has barely changed in a decade because it got the abstractions right: a metric name, a set of key-value labels, a timestamp, and a float64 value.</p>
+
+<h2>Traces: "what happened to <em>this</em> request across the whole system?"</h2>
+
+<p>A trace is a directed acyclic graph of <span class="term">spans</span>, where each span represents one unit of work (an HTTP call, a DB query, a queue dequeue) that happened while servicing a single request. A trace stitches together the journey of one user action across multiple services.</p>
+
+<pre class="pre-label">A trace, flattened
+trace_id: a1b2c3
+  └ span: POST /api/orders (300ms)          ← gateway
+      ├ span: GET /users/7 (45ms)            ← user-service
+      │   └ span: SELECT * FROM users (12ms) ← PostgreSQL
+      └ span: POST /payments (200ms)         ← payment-service
+          └ span: POST stripe.com (180ms)    ← external</pre>
+
+<p>Traces give you the <em>causal chain</em>. The gateway span took 300ms; 200ms of that was the payment service call; 180ms of <em>that</em> was Stripe. Without traces, you see three services each blaming the other for latency. With traces, you see that Stripe is the bottleneck in a single glance.</p>
+
+<p>The cost of traces is <em>volume</em>. A single request through 10 services generates 10+ spans, each with its own timing data, metadata, and context. At high throughput, that's an enormous amount of data. The standard mitigation is <span class="term">sampling</span>: record every span for requests that error or exceed a latency threshold (the interesting ones), and record a fraction of the rest (enough to compute percentiles accurately). Head-based sampling (decide at the first service, propagate the decision) is cheaper but can miss tail-latency problems; tail-based sampling (buffer spans and decide retroactively) catches the interesting outliers but needs infrastructure to buffer and discard.</p>
+
+<h2>The three aren't pillars — they're projections</h2>
+
+<div class="pull">A trace span with high-resolution timestamps and rich attributes is simultaneously a log line and a metric data point.</div>
+
+<p>OpenTelemetry's key insight is that these aren't separate concepts. A span already contains everything a structured log line contains (timestamp, service name, operation, attributes) plus <code>trace_id</code> and <code>span_id</code> for correlation. A metric is just a span with its detail stripped and its values aggregated over time.</p>
+
+<p>The OTLP protocol (OpenTelemetry Protocol) sends all three signals over the same wire format (Protobuf, gRPC on port 4317), so a single agent in your service can emit logs, metrics, <em>and</em> traces to a single collector. The collector can then route them to different backends (Prometheus for metrics, Tempo/Jaeger for traces, Loki/Elastic for logs) or keep them in a unified store that supports cross-signal queries. This unification — one library, one protocol, one collector config — is what makes OpenTelemetry worth the migration from the previous generation of per-signal agents.</p>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  Your service emits structured logs with <code>trace_id</code> on every line. Your traces have rich attributes but are sampled at 10%. A user reports a slow request — it wasn't one of the sampled traces, and you don't have the trace. Can you still debug it? What can the logs tell you that the missing trace can't, and what's permanently lost?
+</div>
+
+<p>The logs can still tell you plenty. If each log line carries the <code>trace_id</code> (and it should — this is a one-line config change in most logging frameworks), you can grep for that ID across all services and reconstruct the request's path manually: the gateway logged the inbound request, the user-service logged a DB query, the payment service logged a Stripe timeout. It's slower than clicking through a trace view, but the data is there.</p>
+
+<p>What's lost is the <em>structural</em> information: the parent-child relationships, the exact durations of each span, the inter-service causality that a trace visualizes automatically. You can infer some of it from timestamps, but at high concurrency the timeline reconstruction becomes ambiguous — did service A's log at T=100ms happen before or after service B's log at T=105ms? Without the span's <code>parent_span_id</code>, you're guessing about causality. This is why sampling strategy is one of the most consequential decisions in an observability setup.</p>
+
+<h2>The OpenTelemetry convergence</h2>
+
+<p>In May 2026, OpenTelemetry graduated from the CNCF — the second-highest-velocity project in CNCF history behind Kubernetes. The practical implications for an engineering team in 2026:</p>
+
+<ul>
+  <li><strong>One agent, not three.</strong> Replace your Datadog agent, your log shipper, and your tracing library with a single OTel collector and SDK.</li>
+  <li><strong>Vendor lock-in is mostly dead.</strong> Switching from Datadog to Grafana Cloud (or self-hosted Tempo/Loki/Mimir) is now a config change in the collector, not a rewrite of every service's instrumentation.</li>
+  <li><strong>Semantic conventions exist.</strong> <code>http.method</code>, <code>db.statement</code>, <code>gen_ai.request.model</code> — standard attribute names mean your traces from different services use the same vocabulary. The <code>gen_ai.*</code> conventions (covering prompts, token counts, model IDs, and tool calls) have become the default transport for LLM observability.</li>
+</ul>
+
+<div class="lens">
+  <span class="lens-tag">when not to</span>
+  OpenTelemetry's SDK adds latency overhead (~microseconds per span) and memory pressure (span objects held until export). For a latency-sensitive trading system, the overhead may be unacceptable. For a CLI tool that runs for 200ms and exits, it's absurd. Observability infrastructure is for long-running services where you can't just attach a debugger. If your system's failure modes are simple enough to reproduce locally, spend your observability budget on better error messages and tests instead.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">Turning "be reliable" into a number —</span> <span class="meta-line">SLIs, SLOs & error budgets</span> give you a framework for deciding how much reliability to buy.</p>
+        <p class="thread"><span class="lead-in">Breaking things on purpose —</span> <span class="meta-line">chaos engineering</span> uses observability to verify that your system fails the way you think it does.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Observability sits among SLOs, chaos engineering, circuit breakers, and data drift">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="50"  y2="140"/>
+          <line class="edge active" x1="140" y1="92" x2="230" y2="140"/>
+
+          <g class="node" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">SLIs &amp; SLOs</text>
+          </g>
+          <g class="node" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">chaos eng.</text>
+          </g>
+          <g class="node learned" transform="translate(50,140)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">circuit breaker</text>
+          </g>
+          <g class="node" transform="translate(230,140)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">data drift</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">observability</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><span class="meta-line">SLIs, SLOs & error budgets · frontier</span></li>
+          <li><span class="meta-line">Chaos engineering · frontier</span></li>
+          <li><a href="circuit-breaker.html">Circuit breakers</a></li>
+          <li><span class="meta-line">Data & concept drift · frontier</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Engineering Practice · operations</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Evaluating LLM Systems — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>LLMs &amp; Generative AI</span><span class="dot"></span>
+      <span>evaluation</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Evaluating LLM Systems</h1>
+    <p class="standfirst">Why "it looked good in the demo" is the most expensive sentence in AI — and the eval frameworks that catch problems before your users do.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>A human evaluates an LLM's output by reading it and thinking "that looks right." This works once, for one output. It doesn't work for a thousand outputs, across prompt changes, model version upgrades, and RAG pipeline tweaks. A system whose evaluation is "vibes" will silently regress — a prompt change improves one case and degrades ten others, and you won't know until users complain.</p>
+
+<p><span class="term">LLM evaluation</span> is the discipline of measuring output quality systematically, automatically, and continuously. It's the hardest problem in production LLM engineering — harder than RAG, harder than fine-tuning — because "correctness" for free-text output is fundamentally fuzzier than accuracy for classification.</p>
+
+<h2>The eval taxonomy</h2>
+
+<div class="pull">There is no single "accuracy" metric for LLM outputs. You measure different dimensions with different tools, and the combination tells you whether a change is an improvement or a regression.</div>
+
+<p><strong>1. Reference-based (n-gram overlap):</strong> Compare the output to a known-good reference answer. BLEU, ROUGE, METEOR. Fast, automatic, and useful when the acceptable answer space is narrow (translation, extractive summarization). Useless when many answers are valid (creative writing, open-ended QA) — "the cat sat on the mat" and "the feline rested on the rug" get a low BLEU score despite being semantically equivalent.</p>
+
+<p><strong>2. LLM-as-judge (model-graded):</strong> Use a stronger LLM to evaluate the output of a weaker one. "Rate the following response on accuracy, relevance, and helpfulness on a scale of 1–5." The judge model is given the prompt, the response, and optionally a reference answer. This is the dominant evaluation method in 2026, used by the Chatbot Arena, AlpacaEval, and most production eval pipelines. It correlates reasonably well with human judgment and scales to thousands of examples. The cost: the judge model has its own biases (preferring longer responses, its own style), and you need to calibrate it against human judgments periodically.</p>
+
+<p><strong>3. Code/structured evaluation:</strong> If the output is code or structured data, run it through a verifier. Code passes tests? Correct. JSON parses and matches a schema? Correct. SQL returns the expected results? Correct. This is the most reliable evaluation — deterministic and fast — but only applies to structured outputs.</p>
+
+<p><strong>4. Human evaluation:</strong> The ground truth. Slow, expensive, and essential for calibrating automatic metrics. Run a human eval on a representative sample (100–500 examples) regularly (monthly), and use it to validate that your automatic metrics still correlate with human judgment.</p>
+
+<h2>What to measure</h2>
+
+<ul>
+  <li><strong>Accuracy / correctness:</strong> Is the answer factually correct? (Hardest to measure automatically — requires ground truth or LLM-as-judge with reference.)</li>
+  <li><strong>Groundedness / faithfulness:</strong> If using RAG, is the answer supported by the retrieved documents, or did the model hallucinate? Measure: extract claims from the output, check each claim against the retrieved context.</li>
+  <li><strong>Relevance:</strong> Does the answer address the question? A factually correct answer about the wrong topic is a failure.</li>
+  <li><strong>Safety / refusal:</strong> For unsafe prompts, does the model refuse correctly? For safe prompts, does the model avoid false refusals? Both over-refusal and under-refusal are bugs.</li>
+  <li><strong>Tone / format:</strong> Does the output match the expected tone and structure? Especially important for customer-facing applications.</li>
+</ul>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  Your eval pipeline uses LLM-as-judge (GPT-4) to rate outputs on a 1–5 scale. You switch to a new generation model and your eval scores jump from 3.8 to 4.3. But human raters say quality is unchanged. What's the likely cause?
+</div>
+
+<p><span class="term">Judge bias</span> — specifically, the judge model might prefer the style of the new generation model (longer responses, more confident tone, certain formatting patterns) even though factual accuracy is unchanged. Or the judge model itself changed (if you upgraded GPT-4 versions). Or your eval prompts are leaking information that makes the judge prefer one model's style. The fix: calibrate the judge against human judgments on a held-out set, use multiple judge models (GPT-4 + Claude), and track <em>relative</em> changes rather than absolute scores. An absolute score of "4.3" is meaningless across model versions; a relative change of "+0.5 vs baseline" is meaningful — but only if the judge is calibrated.</p>
+
+<h2>The eval pipeline</h2>
+
+<pre class="pre-label">Production LLM eval pipeline
+1. Curate eval set: 100–1000 representative prompts + expected outputs
+   (or reference answers for LLM-as-judge)
+2. On every change (prompt, model, RAG config):
+   a. Run eval set through the system
+   b. Score each output (reference-based + LLM-as-judge)
+   c. Compare to baseline: did any dimension regress?
+3. Block deployment if any critical dimension regresses
+4. Periodically (monthly): human eval on a random sample to recalibrate</pre>
+
+<div class="lens">
+  <span class="lens-tag">the eval bootstrapping problem</span>
+  You need a good eval set to improve your system. But building a good eval set requires understanding what "good" means for your specific use case, which requires evaluating outputs, which requires an eval set. The bootstrap: start with 20 hand-written prompts and grade outputs manually. As you see patterns, expand to 100, then 500. Use the manual grades to train an LLM-as-judge prompt that correlates with your judgments. Automate the grading, but keep the manual set as a calibration benchmark. The eval set is never finished — it grows as you discover new failure modes. An eval set from January will not catch a failure mode discovered in June. Treat it as a living asset that accrues value over time.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The evaluation framework from classical ML —</span> <a href="cross-validation.html">cross-validation & data leakage</a> covers evaluation discipline for traditional models; LLM evals extend the same rigor to unstructured outputs.</p>
+        <p class="thread"><span class="lead-in">The alignment step that depends on evals —</span> <a href="rlhf.html">RLHF & preference tuning</a> uses human preference data as its training signal. Good evals are a prerequisite for good alignment.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: LLM evals sit among RLHF, cross-validation, RAG, and fine-tuning">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">RLHF</text>
+          </g>
+          <g class="node learned" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">cross-val.</text>
+          </g>
+          <g class="node learned" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">RAG</text>
+          </g>
+          <g class="node learned" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">fine-tuning</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">LLM evals</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="rlhf.html">RLHF & preference tuning</a></li>
+          <li><a href="cross-validation.html">Cross-validation & data leakage</a></li>
+          <li><a href="rag.html">RAG</a></li>
+          <li><a href="fine-tuning.html">Fine-tuning vs RAG vs prompting</a></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">LLMs &amp; Generative AI · evaluation</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

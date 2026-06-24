@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Consensus: Raft &amp; Paxos — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Systems &amp; Distributed</span><span class="dot"></span>
+      <span>coordination</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Consensus: Raft &amp; Paxos</h1>
+    <p class="standfirst">How a cluster agrees on one truth while machines die mid-sentence — the algorithm at the heart of every distributed database, lock service, and metadata store.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>You have five machines. You want them to agree on a single value — who the leader is, what the next transaction is, what the current schema version is. Three of them propose X, two propose Y. Then one machine crashes. Then the network between the remaining four develops a partition. Somehow, despite messages being delayed, lost, and reordered, the surviving machines must reach a decision that they <em>stick to</em>, even after the crashed machine recovers and the partition heals.</p>
+
+<p>This is the <span class="term">consensus problem</span>, and it's the hardest problem in distributed systems. The two algorithms that solve it — Paxos (Leslie Lamport, 1989) and Raft (Ongaro & Ousterhout, 2014) — are the foundation of every system that needs a single source of truth across multiple machines.</p>
+
+<h2>Why consensus is hard</h2>
+
+<p>The FLP impossibility result (Fischer, Lynch & Paterson, 1985) proved that in an asynchronous system (no bounds on message delay or processing time), consensus is impossible with even one faulty process. The proof isn't a "this is impractical" result — it's a mathematical impossibility. A single unresponsive node can prevent the remaining correct nodes from ever reaching agreement, because they can't distinguish between "the node is crashed" and "the node is slow."</p>
+
+<p>Real systems escape FLP by introducing <em>partial synchrony</em>: the system is asynchronous most of the time, but eventually, message delays and processing times fall within some (unknown) bound. During that synchronous period, consensus completes. This is why consensus algorithms use timeouts and leader election — they're waiting for the synchronous period to arrive. In practice, it almost always does (within seconds), which is why consensus works in production despite being theoretically impossible in the worst case.</p>
+
+<div class="pull">Consensus is impossible in theory and inevitable in practice. The theory bounds the worst case. The practice handles the common case.</div>
+
+<h2>Raft: consensus designed for understandability</h2>
+
+<p>Paxos is famously hard to understand. Lamport's original paper describes a single round of consensus for a single value. Building a practical system (multi-Paxos, handling reconfiguration, log compaction) requires extensions that aren't in the paper and differ across implementations. Raft was explicitly designed to be understandable, decomposing consensus into three sub-problems:</p>
+
+<ol>
+  <li><strong>Leader election:</strong> One node is the leader. It sends heartbeats. If followers don't hear a heartbeat within a randomized timeout, they become candidates and request votes. The candidate with a majority of votes becomes the new leader. Randomized timeouts prevent split votes (if two candidates have the same timeout, they'll both request votes simultaneously and neither gets a majority).</li>
+
+  <li><strong>Log replication:</strong> The leader appends client requests to its log and replicates them to followers via <code>AppendEntries</code> RPCs. A log entry is <em>committed</em> when a majority of servers have stored it. Committed entries are durable — they survive leader changes. The leader's log is the truth; followers' logs are made to match.</li>
+
+  <li><strong>Safety:</strong> A new leader must have all committed entries from previous terms. This is enforced by the election process: a candidate's <code>RequestVote</code> includes its log's last index and term, and voters only vote for candidates whose logs are at least as up-to-date as their own. This guarantees that committed entries are never lost across leader changes — the "Leader Completeness Property."</li>
+</ol>
+
+<pre class="pre-label">Raft's guarantee in one sentence
+If a log entry is committed (stored on a majority),
+then all future leaders will contain that entry.</pre>
+
+<p>Raft powers etcd (Kubernetes' backing store), Consul, TiKV, and — since Kafka 4.0 — Kafka's own metadata management (KRaft). It's the most widely deployed consensus algorithm in production infrastructure.</p>
+
+<h2>Multi-Paxos: the production version</h2>
+
+<p>Lamport's original Paxos describes a single round of consensus. Multi-Paxos extends it to a log by electing a stable leader (the "distinguished proposer") that runs the prepare phase once and then streams accept messages for each new log entry. In practice, Multi-Paxos is similar to Raft — leader, log, majority commit — but the details differ enough that implementations are subtle and bug-prone. Google's Chubby (the lock service behind Google's internal infrastructure) used Multi-Paxos. Spanner uses it. Most systems that say "we use Paxos" mean Multi-Paxos with a stable leader, which is architecturally similar to Raft.</p>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  A Raft cluster has 5 nodes. The leader crashes. The remaining 4 nodes run an election. How many votes does a candidate need to become leader? What happens if the network partitions the cluster into a group of 3 and a group of 2?
+</div>
+
+<p>A candidate needs 3 votes (a majority of 5). The group of 3 can elect a leader and continue operating — it has a majority. The group of 2 cannot elect a leader (2 is not a majority of 5) and will be unavailable for writes until the partition heals. This is why Raft clusters are typically deployed with odd numbers of nodes (3, 5, 7): an odd-sized cluster tolerates (n−1)/2 failures while still being able to form a majority. A 3-node cluster tolerates 1 failure; a 5-node cluster tolerates 2. The partition of 3+2 is survivable (the 3-node side continues); a partition of 2+2 from a 5-node cluster leaves neither side with a majority, and both sides are unavailable — the protocol is correctly refusing to make progress rather than risking a split-brain.</p>
+
+<div class="lens">
+  <span class="lens-tag">when not to reach for consensus</span>
+  Consensus is expensive. Every write requires a majority of nodes to acknowledge, which means network round-trips and disk flushes. For a metadata store that handles infrequent writes, this is fine. For a high-throughput data store where every write must be replicated, leader-follower <a href="replication.html">replication</a> is often sufficient — you get durability without the consensus overhead. Consensus is for when you genuinely need a single, globally-agreed-upon order of operations, not just a copy of the data. If the question is "what's the next value in this sequence?" and multiple writers compete to answer it, you need consensus. If the question is "here's the value, store it durably," replication is enough.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The theorem that bounds what consensus can do —</span> <a href="cap-theorem.html">the CAP theorem</a> explains why a consensus system must choose between availability and consistency during a partition.</p>
+        <p class="thread"><span class="lead-in">Picking a leader without a full consensus round —</span> <span class="meta-line">leader election</span> is a weaker form of coordination; Raft embeds leader election, but standalone election algorithms solve a simpler problem.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Consensus sits among CAP, leader election, quorums, and replication">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">CAP</text>
+          </g>
+          <g class="node" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">leader elect.</text>
+          </g>
+          <g class="node" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">quorums</text>
+          </g>
+          <g class="node learned" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">replication</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">consensus</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="cap-theorem.html">The CAP theorem</a></li>
+          <li><span class="meta-line">Leader election · frontier</span></li>
+          <li><span class="meta-line">Quorums · frontier</span></li>
+          <li><a href="replication.html">Replication</a></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Systems &amp; Distributed · coordination</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

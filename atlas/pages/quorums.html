@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Quorums &amp; the R+W>N Rule — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Systems &amp; Distributed</span><span class="dot"></span>
+      <span>coordination</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Quorums &amp; the R+W&gt;N Rule</h1>
+    <p class="standfirst">A counting trick that buys you consistency without locking everything — and the inequality that governs every distributed read and write.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>You have three replicas of your database. You want every read to see the latest write, without using <a href="consensus.html">consensus</a> or a leader. How many replicas must you write to? How many must you read from?</p>
+
+<p>The answer is the <span class="term">quorum condition</span>: <strong>R + W > N</strong>, where N is the total number of replicas, W is the number of replicas that must acknowledge a write, and R is the number that must respond to a read. If R + W > N, then every read quorum must overlap with every write quorum — at least one replica in every read has seen the latest write. No locking. No leader. Just counting.</p>
+
+<div class="pull">R + W > N guarantees that the read set and write set always intersect. The overlapping replica carries the latest value forward.</div>
+
+<h2>Why this works</h2>
+
+<p>With N=3 replicas, a write that succeeds on W=2 replicas (replicas A and B) and a read that queries R=2 replicas (A and C) are guaranteed to overlap at replica A. Replica A has the latest write. The read coordinator receives responses from A (new value) and C (stale value), detects the conflict (by comparing version vectors or timestamps), and returns the newer value.</p>
+
+<p>The overlapping-replica guarantee is a pigeonhole principle: if you write to W replicas and read from R replicas, and R + W > N, at least one replica must be in both sets. There aren't enough replicas outside the write set to fill a read quorum without hitting one that was written.</p>
+
+<p>This is the foundation of <span class="term">quorum-based replication</span>, used by DynamoDB, Cassandra (with tunable consistency), and Riak. It's not consensus — there's no total ordering, no leader election. But it provides a configurable consistency guarantee that costs only the latency of the slowest responder in the quorum.</p>
+
+<h2>Tuning R and W: the consistency dial</h2>
+
+<pre class="pre-label">Quorum configurations for N=3
+R=1, W=3: writes are expensive (all 3 must ack), reads are cheap (any 1 replica)
+            → reads may be stale (R+W=4 > 3, but R=1 means single-replica read)
+            → strong write consistency, weak read consistency
+
+R=3, W=1: reads are expensive, writes are cheap
+            → writes may be lost (only 1 replica has the write)
+            → R+W=4 > 3, but W=1 means durability is weak
+
+R=2, W=2: balanced. Every read sees the latest write.
+            → R+W=4 > 3 ✓
+            → tolerates 1 unavailable replica (you can still form R=2 or W=2
+              from the remaining 2 replicas)
+
+R=1, W=1: fastest possible, no consistency guarantee
+            → R+W=2 ≤ 3 ✗ — reads may miss recent writes
+            → Use when speed > consistency (caches, analytics)</pre>
+
+<p>The most common production configuration: <strong>R=2, W=2, N=3</strong> (or R=3, W=3, N=5 for higher durability). This gives you: consistent reads (every read sees the latest acknowledged write), tolerance of one unavailable node (with N=3), and latency bounded by the second-fastest node (not the slowest, as with W=N).</p>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  You have N=5, W=3, R=3. Two replicas are down. Can you still read and write? Does every read see the latest write? What about when the two downed replicas recover — what data do they have?
+</div>
+
+<p>Yes, you can read and write — 3 replicas remain, which is enough to form both W=3 and R=3 quorums. Every read sees the latest write (R+W = 6 > 5 ✓). When the two downed replicas recover, they have stale data — they missed writes that happened while they were down. A background <span class="term">read repair</span> or <span class="term">anti-entropy</span> process will bring them up to date by comparing their state with the quorum's. During recovery, reads that include one of the stale replicas will see a version conflict (the stale replica returns an old version, the other replicas return newer ones), and the read coordinator will return the newer value and trigger a repair write to the stale replica. This is the standard Dynamo pattern: quorums for normal operation, background repair for recovery.</p>
+
+<h2>Sloppy quorums: when the preferred replicas are down</h2>
+
+<p>A strict quorum requires W acknowledgments from the <em>specific</em> W replicas designated for that key. If one of those replicas is down, writes fail. A <span class="term">sloppy quorum</span> (Dynamo's "hinted handoff"): if a designated replica is down, write to a different replica instead, and include a "hint" about who the data was meant for. The substitute replica holds the data temporarily. When the designated replica recovers, the substitute forwards the data. Writes succeed during transient failures, but the consistency guarantee weakens during the failure window — the substitute isn't one of the designated replicas, so read quorums might miss it.</p>
+
+<p>Sloppy quorums trade consistency for availability during failures. This is the "eventually consistent" choice — the system accepts writes during a partition, and the consistency is repaired when the partition heals. Strict quorums reject writes during a partition (you can't form W), preserving consistency at the cost of availability. This is the <a href="cap-theorem.html">CAP theorem</a> in practice: you choose CP (strict quorums, unavailable during partition) or AP (sloppy quorums, available during partition, eventually consistent).</p>
+
+<div class="lens">
+  <span class="lens-tag">the operational truth</span>
+  Quorums work beautifully in theory and degrade gracefully in practice — but only if you monitor them. A cluster that silently operates with fewer replicas than you configured (because two nodes have been down for weeks and nobody noticed) has a smaller effective N, which means R+W might no longer exceed N. Your consistency guarantee evaporated without an alert firing. Monitor: the actual number of replicas responding to reads and writes, not just the configured N. A configured N=5 with 3 replicas actually alive is effectively N=3, and R=2, W=2 on N=3 gives you R+W=4 > 3 (still safe), but your durability margin is gone.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The replication pattern quorums enable —</span> <a href="replication.html">replication</a> covers leader-follower and multi-leader models; quorums are the mechanism under leaderless replication.</p>
+        <p class="thread"><span class="lead-in">The consistency model on the other side —</span> <span class="meta-line">eventual consistency</span> is what you get when R+W ≤ N. Wrong now, right later — and often the correct trade.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Quorums sit among replication, eventual consistency, consensus, and CAP">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">replication</text>
+          </g>
+          <g class="node" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">eventual cons.</text>
+          </g>
+          <g class="node learned" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">consensus</text>
+          </g>
+          <g class="node learned" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">CAP</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">quorums</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="replication.html">Replication</a></li>
+          <li><span class="meta-line">Eventual consistency · frontier</span></li>
+          <li><a href="consensus.html">Consensus: Raft & Paxos</a></li>
+          <li><a href="cap-theorem.html">The CAP theorem</a></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Systems &amp; Distributed · coordination</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

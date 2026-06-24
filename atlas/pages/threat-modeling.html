@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Threat Modeling — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Security</span><span class="dot"></span>
+      <span>process</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Threat Modeling</h1>
+    <p class="standfirst">Thinking like the attacker, on a whiteboard, before you ship — the practice that turns security from a scanner report into an engineering discipline.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>Security tools find bugs. A SAST scanner tells you about SQL injection on line 47. A dependency scanner tells you about a CVE in your YAML parser. These are valuable — use them. But they don't answer the question that matters most: <em>what should I be worried about?</em></p>
+
+<p><span class="term">Threat modeling</span> is the practice of answering that question systematically. You draw a diagram of your system, enumerate what could go wrong, and decide which threats are worth defending against. The output isn't a list of bugs — it's a prioritized list of risks with mitigations. And the most useful output is often the decision <em>not</em> to mitigate something, because the cost of defense exceeds the cost of the compromise.</p>
+
+<div class="pull">Threat modeling is risk management applied to software. The goal isn't to find every vulnerability — it's to find the ones worth fixing.</div>
+
+<h2>STRIDE: the six things that can go wrong</h2>
+
+<p>Microsoft's STRIDE framework (1999, still the most widely used) categorizes threats into six families. For each component in your system, ask:</p>
+
+<ul>
+  <li><strong>Spoofing:</strong> Can someone pretend to be someone else? (Forged JWT, stolen session cookie, IP spoofing.)</li>
+  <li><strong>Tampering:</strong> Can someone modify data they shouldn't? (Modifying a request body in transit, writing to a database without authorization.)</li>
+  <li><strong>Repudiation:</strong> Can someone deny doing something? (No audit log for sensitive actions, deletion of logs.)</li>
+  <li><strong>Information disclosure:</strong> Can someone see data they shouldn't? (Leaked S3 bucket, verbose error messages exposing stack traces, missing authentication on an internal endpoint.)</li>
+  <li><strong>Denial of service:</strong> Can someone prevent legitimate users from using the system? (Unbounded requests, expensive queries without rate limiting, resource exhaustion.)</li>
+  <li><strong>Elevation of privilege:</strong> Can someone gain permissions they shouldn't have? (A user becoming admin by exploiting a missing authorization check.)</li>
+</ul>
+
+<p>The value of STRIDE isn't the categories — it's that it gives you a checklist. Without a framework, threat modeling becomes "what are we worried about?", which biases toward the last incident the team experienced. With STRIDE, you systematically work through each category for each component, and you find threats you'd miss if you were brainstorming.</p>
+
+<h2>How to actually run one</h2>
+
+<p>A threat modeling session that produces useful output in two hours:</p>
+
+<ol>
+  <li><strong>Draw the data flow diagram.</strong> Not the architecture diagram with every microservice. The <em>data flow</em> diagram: where does data enter the system? Where does it go? Where are the trust boundaries (the lines between "we control this" and "we don't")? A trust boundary is where threats concentrate — every crossing is a potential attack surface.</li>
+
+  <li><strong>Enumerate threats.</strong> For each data flow crossing a trust boundary, apply STRIDE. "User → Login API: spoofing (what if the JWT is forged?), tampering (what if the request body is modified?), information disclosure (what if the error message leaks whether the email is registered?)"</li>
+
+  <li><strong>Prioritize.</strong> Not every threat is worth mitigating. Use a simple risk matrix: likelihood × impact. A threat that's easy to exploit and exposes customer PII is critical. A threat that requires physical access to a machine in a locked data center is not.</li>
+
+  <li><strong>Decide and document.</strong> For each high-priority threat, choose: mitigate (fix it), transfer (buy insurance, use a third-party auth provider), accept (explicitly decide the risk is acceptable), or avoid (remove the feature that creates the risk). Document the decision — the most valuable output of a threat model isn't the fixed bugs, it's the <em>accepted risks</em> that the team explicitly chose not to fix.</li>
+</ol>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  Your team threat-models a new payments integration. The data flow diagram shows a trust boundary between your backend and Stripe's API. You apply STRIDE and identify tampering: "what if an attacker modifies the payment amount in transit?" What mitigations apply, and why is one of them already handled without your team doing anything?
+</div>
+
+<p>The transmission is over <a href="tls.html">TLS</a> — the amount is encrypted in transit, so a network attacker can't modify it. This is already handled by the protocol. But TLS only protects data <em>in transit</em>. If an attacker compromises your backend and modifies the amount before it's sent, TLS doesn't help. The threat model distinguishes between the two scenarios: network tampering (mitigated by TLS, already handled) and application-level tampering (mitigated by input validation, audit logging, and idempotency keys — things your team builds). The value of the exercise is separating the threats that infrastructure handles from the threats that application code handles.</p>
+
+<h2>When to threat model</h2>
+
+<p>Not every feature needs a formal threat model. The triggers that justify one:</p>
+<ul>
+  <li>New trust boundary (a new external integration, a new authentication flow, exposing an internal service to the internet)</li>
+  <li>Sensitive data in a new context (PII moving between services, financial data being cached where it wasn't before)</li>
+  <li>Major architectural change (monolith → microservices, new third-party dependency with broad permissions)</li>
+  <li>Compliance requirement (SOC 2, HIPAA, PCI DSS — the auditor will ask for threat models)</li>
+</ul>
+
+<div class="lens">
+  <span class="lens-tag">the real value</span>
+  The best threat modeling output is a change to the design <em>before</em> code is written. If a threat model finds a problem in a deployed system, it's a bug report — valuable, but expensive to fix. If a threat model finds a problem in a design document, it's a design change — cheap and fast. The practice compounds when it's applied early in the development lifecycle, not as a pre-launch audit. A threat model during design is architecture. A threat model during a security review is a rescue mission.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The auth mechanism under the most-threatened trust boundary —</span> <a href="auth-tokens.html">sessions, JWTs & OAuth</a> is where spoofing and elevation-of-privilege threats concentrate.</p>
+        <p class="thread"><span class="lead-in">The cryptography that backs the mitigations —</span> <a href="public-key-crypto.html">public-key cryptography</a> and TLS are the mathematical primitives that turn "we should encrypt this" into actual protection.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Threat modeling sits among auth tokens, public-key crypto, hashing passwords, and circuit breakers">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">auth tokens</text>
+          </g>
+          <g class="node learned" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">public-key</text>
+          </g>
+          <g class="node learned" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">hashing pws</text>
+          </g>
+          <g class="node learned" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">circuit breaker</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">threat model</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="auth-tokens.html">Sessions, JWTs & OAuth</a></li>
+          <li><a href="public-key-crypto.html">Public-key cryptography</a></li>
+          <li><a href="circuit-breaker.html">Circuit breakers</a></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Security · process</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Feature Flags &amp; Progressive Delivery — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Engineering Practice</span><span class="dot"></span>
+      <span>delivery</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Feature Flags &amp; Progressive Delivery</h1>
+    <p class="standfirst">Decoupling "deployed" from "released" — and the operational debt that decision quietly accrues.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>At most companies, "deploy" and "release" are the same verb. You push code to production, and users see it. This coupling is expensive: a bad deploy is immediately a bad release, and rolling back means rolling back code. If a deploy takes 20 minutes and rollback takes 20 minutes, a bad change means 40 minutes of user-facing impact — plus the blast radius of whatever the broken code did during those 40 minutes.</p>
+
+<p>A <span class="term">feature flag</span> (or feature toggle) decouples them. The code deploys disabled — behind an <code>if (featureFlag("new-checkout"))</code>. The flag is off for everyone. Sometime later — minutes, days, weeks — you turn the flag on. Now the code is <em>released</em>. If something goes wrong, you turn the flag off. Release and rollback are instant, because no code needs to deploy.</p>
+
+<div class="pull">A feature flag turns a deployment from a binary risk (deploy = release) into a controlled dial (deploy, then release to 1%, then 10%, then 100%).</div>
+
+<h2>Beyond on/off: the flag taxonomy</h2>
+
+<p>Not all flags are created equal. Pete Hodgson's taxonomy (from the Martin Fowler article that defined the space) is still the standard:</p>
+
+<ul>
+  <li><strong>Release flags:</strong> Hide unfinished code. The "trunk-based development with feature flags" pattern: merge incomplete features to main, ship them disabled, activate when ready. These should be short-lived (days to weeks) and removed once the feature ships. Long-lived release flags are a warning sign — the feature is probably abandoned.</li>
+
+  <li><strong>Experiment flags:</strong> A/B tests. 50% of users see variant A, 50% see variant B. Measure conversion, engagement, or whatever metric you're optimizing. These are medium-lived (weeks to months, the duration of the experiment).</li>
+
+  <li><strong>Operational flags:</strong> Kill switches for infrastructure. "Disable the recommendation engine if it's overwhelming the database." These are long-lived — they protect against failures you hope never happen.</li>
+
+  <li><strong>Permission flags:</strong> "This feature is only for internal users" or "only for users on the enterprise plan." These are long-lived and tied to business logic, not development velocity.</li>
+</ul>
+
+<p>The distinction matters because each type has different lifecycle expectations. A release flag that's still in the code two years later is technical debt. An operational flag that's two years old is a safety net that hasn't been tested recently. The cleanup strategy differs.</p>
+
+<h2>Progressive delivery: the dial, not the switch</h2>
+
+<p>Turning a feature on for 100% of users at once is a feature flag, but not progressive delivery. Progressive delivery uses the flag as a <em>dial</em>:</p>
+
+<ol>
+  <li>Deploy code (flag off for everyone).</li>
+  <li>Enable for internal users / dogfooding (0.1%). Watch metrics for an hour.</li>
+  <li>Enable for 1% of external users. Watch metrics for a day.</li>
+  <li>Enable for 10%. Watch for a day.</li>
+  <li>Enable for 50%. Watch.</li>
+  <li>Enable for 100%. Remove the flag.</li>
+</ol>
+
+<p>At each step, you're checking: did error rates change? Did latency increase? Did the business metric (conversion, engagement) move in the right direction? If any check fails, you roll back the flag — which is instant. The blast radius of a bad release is the percentage you've rolled out to, not 100%.</p>
+
+<p>A <span class="term">canary deploy</span> is the infrastructure variant of the same idea: deploy new code to a small subset of instances, route a fraction of traffic to them, and monitor. If the canary instances show elevated error rates or latency, stop the deploy and roll back. Kubernetes natively supports this with rolling updates and health checks; service mesh tools (Istio, Linkerd) add traffic-splitting on top. The pattern is the same as feature flags: don't bet the farm on "it worked in staging."</p>
+
+<h2>The debt that flags accrue</h2>
+
+<div class="lens">
+  <span class="lens-tag">the real cost</span>
+  Every flag doubles the number of code paths for the feature it gates. Two flags = 4 paths. Five flags = 32 paths. Your test matrix explodes combinatorially, and testing every combination is infeasible. The practical answer: test the flag-on and flag-off states independently (not combinatorially), and rely on monitoring in production to catch interactions. But the monitoring is load-bearing — you will ship flag combinations you haven't tested, and the only safety net is observability.
+
+  The second cost: flag removal. Every release flag should have an expiration date and an owner. When the flag ships to 100% and stabilizes, remove it — the flag, the old code path, and the tests for the old code path. Teams that are disciplined about flag hygiene ship faster over time. Teams that aren't accumulate a rat's nest of flags, and the <code>if</code> statements obscure the actual business logic. A feature flag system without a removal process is a liability, not an asset.
+</div>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  You remove a release flag that's been at 100% for three months. You delete the old code path behind the <code>else</code>. The deploy goes out. Panic: a critical internal tool that was still importing the old function breaks. What category of problem is this, and what's the process fix?
+</div>
+
+<p>This is a flag removal failure caused by incomplete dependency scanning. The <code>if</code> branch was disabled and inactive, but the old code was still importable. The process fix: treat flag removal as a code change, not a cleanup. Search for all references to the flagged function before deleting it. Better: use a flag system that tracks which flags are currently active and alerts when a 100% flag has been stable for N days. Even better: automate the removal — a bot that files a PR deleting the flag and the old code path, runs tests, and assigns it to the flag owner. Flags are infrastructure; infrastructure needs automation to stay healthy at scale.</p>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The deploy pattern flags enable —</span> <span class="meta-line">blue-green & canary deploys</span> covers the infrastructure side: routing traffic between old and new versions at the network level.</p>
+        <p class="thread"><span class="lead-in">The observability that catches flag failures —</span> <a href="observability.html">logs, metrics & traces</a> is what tells you your flag rollout is breaking things before 100% of users notice.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Feature flags sit among blue-green deploys, twelve-factor, SLOs, and chaos engineering">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">blue-green</text>
+          </g>
+          <g class="node" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">twelve-factor</text>
+          </g>
+          <g class="node learned" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">SLOs</text>
+          </g>
+          <g class="node learned" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">chaos eng.</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">feature flags</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><span class="meta-line">Blue-green & canary · frontier</span></li>
+          <li><span class="meta-line">Twelve-factor app · frontier</span></li>
+          <li><a href="slo.html">SLIs, SLOs & error budgets</a></li>
+          <li><a href="chaos-engineering.html">Chaos engineering</a></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Engineering Practice · delivery</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

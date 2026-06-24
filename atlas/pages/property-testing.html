@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Property-Based Testing — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Engineering Practice</span><span class="dot"></span>
+      <span>testing</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Property-Based Testing</h1>
+    <p class="standfirst">Stop writing examples; describe what must always be true — and let the machine attack it with ten thousand random inputs.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>A unit test checks one example: <code>assert add(2, 3) == 5</code>. If <code>add</code> has a bug that manifests only for negative numbers, or large numbers, or zero, the test passes and the bug ships. You can add more examples — <code>add(0, 0)</code>, <code>add(-1, 1)</code>, <code>add(INT_MAX, 1)</code> — but you're guessing at the interesting inputs. The test suite covers the examples you thought of, not the space of possible inputs.</p>
+
+<p><span class="term">Property-based testing</span> inverts the relationship: you specify a <em>property</em> that must hold for all inputs, and the framework generates random inputs to test it. Instead of <code>add(2, 3) == 5</code>, you write: "for all integers a and b, add(a, b) == a + b (the reference implementation), add(a, b) == add(b, a) (commutativity), and add(a, 0) == a (identity)." The framework generates thousands of random a, b pairs and checks all properties. If it finds a counterexample, it <em>shrinks</em> it — finds the simplest input that still fails — and reports: "add(-1, INT_MIN) failed: overflow."</p>
+
+<div class="pull">You specify what should always be true. The machine finds the edge cases where it isn't.</div>
+
+<h2>What makes a good property</h2>
+
+<p>A good property is a mathematical invariant — something that should hold for all inputs, independent of implementation details:</p>
+
+<ul>
+  <li><strong>Round-trip:</strong> <code>decode(encode(x)) == x</code> — serialization, compression, encoding. The classic property: any value should survive a round trip.</li>
+
+  <li><strong>Idempotence:</strong> <code>f(f(x)) == f(x)</code> — sorting a sorted list, normalizing normalized text, applying a database migration that's already been applied. Doing it twice should be the same as doing it once.</li>
+
+  <li><strong>Commutativity / associativity:</strong> <code>merge(a, b) == merge(b, a)</code> — CRDT merges, set operations, mathematical operations where order shouldn't matter.</li>
+
+  <li><strong>Inverse:</strong> <code>add(x, negate(x)) == 0</code> — operations that have an inverse. Addition/subtraction, push/pop (on a stack, pop(push(x)) returns x).</li>
+
+  <li><strong>Oracle / model:</strong> Compare against a simpler reference implementation. The optimized B-tree should return the same results as a linear scan. The compiled regex should match the same strings as an interpreted version.</li>
+
+  <li><strong>Metamorphic:</strong> If you change the input in a known way, the output should change in a predictable way. <code>sort(list.append(x)) == sort(list).insert(x)</code> — inserting before sorting should be equivalent to inserting into a sorted list at the right position.</li>
+</ul>
+
+<h2>Shrinking: the magic that makes property testing useful</h2>
+
+<p>When a property test fails, the failing input might be a 500-element list with deeply nested structure. The framework <span class="term">shrinks</span> it — iteratively simplifies the failing input while checking that it still fails. A 500-element list shrinks to a 3-element list. An integer of 847293874 shrinks to 0 or -1. The reported counterexample is the <em>simplest</em> input that triggers the bug.</p>
+
+<p>This is what makes property testing practical for debugging. A failing unit test says "your code breaks on input X, which you thoughtfully provided." A failing property test says "your code breaks on <em>this specific minimal input</em>, which the machine discovered by trying thousands and distilling the failure to its essence." The shrinking is the difference between "somewhere in this 500-element list is a problem" and "your sort function breaks on a 2-element duplicate list [3, 3]."</p>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  You write a property test for a JSON parser: for any string s, toString(parse(s)) should equal s. The test fails — but only for very specific inputs. Before reading on: what kind of string breaks this property, and is it a bug in the parser or the property?
+</div>
+
+<p>Several cases break it. Leading zeros in numbers: <code>parse("01")</code> might return <code>1</code>, and <code>toString(1)</code> returns <code>"1"</code> — not equal. Whitespace: <code>parse(" 42 ")</code> strips whitespace, <code>toString(42)</code> returns <code>"42"</code>. Unicode escapes: <code>parse("\"\\u00e9\"")</code> produces <code>"é"</code>, <code>toString("é")</code> produces <code>"\"é\""</code>. These are property failures, not parser bugs — the property is too strong. The parser is correct; the normalization is expected behavior. The fix: refine the property to "for any valid JSON value, <code>parse(toString(x)) == x</code>" (the other direction: serialize then parse should be identity). Or use a canonicalization function in the property: <code>canonicalize(toString(parse(s))) == canonicalize(s)</code>. Getting the property right is the hard part of property-based testing.</p>
+
+<h2>The tools</h2>
+<ul>
+  <li><strong>Haskell: QuickCheck</strong> — the original (1999). Every property testing library descends from it.</li>
+  <li><strong>Python: Hypothesis</strong> — the gold standard for dynamic languages. Generators, shrinkers, and stateful testing (test sequences of operations on a stateful system).</li>
+  <li><strong>Java: jqwik</strong> — property-based testing on the JVM, with composable generators.</li>
+  <li><strong>Rust: proptest</strong> — property testing with Rust's type system, generating values from <code>Arbitrary</code> trait implementations.</li>
+  <li><strong>Go: rapid</strong> — Go's standard library property testing package (<code>testing/quick</code> is the older, simpler version).</li>
+</ul>
+
+<div class="lens">
+  <span class="lens-tag">when not to property-test</span>
+  Property testing finds bugs in functions with well-defined mathematical properties: parsers, serializers, sorters, data structure operations, compression, encoding. It's less useful for side-effectful code (I/O, database calls), code whose correctness is defined by human judgment rather than invariants ("this UI looks right"), and code where the properties are so complex to specify that they're effectively a second implementation. The property <em>is</em> the test oracle. If specifying the property is harder than writing the code, property testing isn't the right tool.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">Throwing garbage at your code —</span> <span class="meta-line">fuzzing</span> is property testing's sibling: randomly generated inputs without explicit properties, looking for crashes rather than assertion failures.</p>
+        <p class="thread"><span class="lead-in">Testing your tests —</span> <span class="meta-line">mutation testing</span> verifies that your property tests actually catch bugs by injecting them deliberately.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: Property testing sits among testing pyramid, fuzzing, mutation testing, and formal methods">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">test pyramid</text>
+          </g>
+          <g class="node" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">fuzzing</text>
+          </g>
+          <g class="node" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">mutation test</text>
+          </g>
+          <g class="node" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">TLA+</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">property test</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="testing-pyramid.html">The testing pyramid</a></li>
+          <li><span class="meta-line">Fuzzing · frontier</span></li>
+          <li><span class="meta-line">Mutation testing · frontier</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Engineering Practice · testing</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

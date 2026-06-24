@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sampling &amp; Decoding — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>LLMs &amp; Generative AI</span><span class="dot"></span>
+      <span>inference</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Sampling &amp; Decoding</h1>
+    <p class="standfirst">Temperature, top-p, and what "creativity" actually means to a model — the four knobs between your prompt and the token that comes out.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>An LLM doesn't "choose" the next word. For each position, it produces a vector of logits — raw, unnormalized scores — over its entire vocabulary (128K to 200K tokens in 2026 models). The model's raw output is a list of 200,000 numbers, each representing how plausible that token is as the next one. Turning that into an actual token — the word that appears on your screen — is <span class="term">decoding</span>, and there are more ways to do it than most users realize.</p>
+
+<h2>The pipeline: logits → probabilities → token</h2>
+
+<pre class="pre-label">From model output to next token
+Raw logits:     [2.1, -0.5, 8.7, 1.2, ..., -3.4]   ← 200K numbers
+↓ softmax
+Probabilities:  [0.001, 0.000, 0.72, 0.003, ..., 0.000]  ← sums to 1.0
+↓ sampling strategy (temperature, top-p, top-k)
+Filtered probs: [0.0, 0.0, 0.85, 0.0, ..., 0.0]         ← only valid candidates
+↓ sample
+Token ID:       2874  → "the"</pre>
+
+<p>The art of decoding is everything that happens between the probability distribution and the sampled token. Four knobs control it, and they interact in ways that surprise people who treat them as independent.</p>
+
+<h2>Temperature: sharpening or flattening the distribution</h2>
+
+<p>Temperature is the simplest knob: divide every logit by T before softmax.</p>
+
+<pre>pᵢ = exp(zᵢ / T) / Σⱼ exp(zⱼ / T)</pre>
+
+<ul>
+  <li><strong>T = 0 (greedy):</strong> Always pick the most probable token. Deterministic, reproducible, boring. Good for factual extraction and evaluation benchmarks. Bad for anything where you want the model to explore alternatives.</li>
+  <li><strong>T < 1 (low):</strong> Sharpens the distribution — the model becomes more confident in its top choices. At T=0.3, the probability mass concentrates heavily on the top few tokens. Good for code generation and structured data where correctness matters more than variety.</li>
+  <li><strong>T = 1 (neutral):</strong> Uses the model's raw probabilities as-is. The model's unmodified judgment about what should come next.</li>
+  <li><strong>T > 1 (high):</strong> Flattens the distribution — makes unlikely tokens more likely. At T=2.0, the model starts considering tokens it would normally dismiss. Good for creative brainstorming and ideation where surprising connections are the point.</li>
+</ul>
+
+<div class="pull">Temperature doesn't make the model "more creative" — it makes the model more willing to bet on tokens it thinks are unlikely.</div>
+
+<p>A crucial detail: temperature changes the <em>shape</em> of the distribution but doesn't truncate it. At T=0.7, an improbable token (0.001 probability) might become 0.01 — still improbable, but 10× more likely to be sampled than at T=1.0. This is why setting T=1.2 and being surprised by a nonsensical output is a user error, not a model hallucination — you told the model to take risks, and it did.</p>
+
+<h2>Top-k: fixed-size candidate pool</h2>
+
+<p>Top-k truncation keeps only the k highest-probability tokens, zeros out the rest, renormalizes, and samples. k=50 means the model chooses from the top 50 candidates regardless of how confident it is.</p>
+
+<p>The problem: "top 50" means very different things in different contexts. When the model is highly confident (next word is almost certainly "the"), the 50th token has near-zero probability, but top-k includes it anyway. When the model is uncertain (creative writing, many plausible next words), the 50th token might still be genuinely plausible. A fixed k applies the same truncation to both situations, which is mathematically unsatisfying and practically leads to either including noise or excluding valid options.</p>
+
+<p>Top-k is increasingly used as a coarse filter (k=50 or 100) in combination with top-p, rather than as a standalone strategy. The Anthem recipe (popularized in 2025 for agentic LLM outputs) pairs top-k=50 with top-p=0.95 and min-p=0.05 for a belt-and-suspenders approach to tail control.</p>
+
+<h2>Top-p (nucleus sampling): dynamic candidate pool</h2>
+
+<p>Top-p addresses top-k's fixed-width problem by making the pool size dynamic. It keeps the smallest set of tokens whose cumulative probability exceeds p (typically 0.9–0.95), zeros out the rest, renormalizes, and samples.</p>
+
+<p>When the model is confident, the nucleus might be 3 tokens that collectively represent 0.95 probability. When the model is uncertain, the nucleus might be 200 tokens. The pool size adapts to the model's confidence, which is the behavior you almost always want.</p>
+
+<p>This is why top-p has largely displaced top-k as the primary truncation strategy in production LLM APIs. OpenAI's default is top-p=0.95 (temperature varies by model). Anthropic's Claude defaults to top-p=0.95. The dynamic behavior means you set one number and it works reasonably across different kinds of text.</p>
+
+<h2>Min-p: the relative floor (the 2025 addition)</h2>
+
+<p>Min-p is the newest widely-adopted knob. It sets a threshold relative to the maximum probability: if the most probable token has probability 0.6, min-p=0.05 discards any token below 0.6 × 0.05 = 0.03. This acts as an adaptive floor that moves with the model's confidence level.</p>
+
+<p>The insight: what counts as "too improbable" depends on how confident the model is about its best option. If the top token has p=0.8, a token with p=0.01 is genuinely a long shot. If the top token has p=0.1 (the model is genuinely unsure), a token with p=0.01 might be worth considering. Min-p captures this relativity automatically, which fixed thresholds (like "drop tokens below 1%") don't.</p>
+
+<h2>How to set the knobs in practice</h2>
+
+<table>
+  <tr><th>Use case</th><th>T</th><th>top-p</th><th>top-k</th><th>Notes</th></tr>
+  <tr><td>Factual extraction</td><td>0.0</td><td>1.0</td><td>—</td><td>Greedy. Pin seed + model version.</td></tr>
+  <tr><td>Code generation</td><td>0.2–0.4</td><td>0.90</td><td>40</td><td>Low T reduces hallucinated APIs.</td></tr>
+  <tr><td>General chat</td><td>0.7–0.8</td><td>0.95</td><td>50</td><td>The API default for good reason.</td></tr>
+  <tr><td>Creative writing</td><td>0.8–1.0</td><td>0.95</td><td>50–100</td><td>Higher T for novelty.</td></tr>
+  <tr><td>Agentic reasoning</td><td>0.5–0.75</td><td>0.95</td><td>40–50</td><td>Add min-p=0.05 for tail control.</td></tr>
+</table>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  You set T=0 (greedy) to get deterministic outputs for your eval suite. But the same prompt with T=0 produces different answers on different runs. How?
+</div>
+
+<p>Even at T=0, non-determinism leaks in. Floating-point non-associativity means the order of parallel operations on the GPU can produce slightly different logit values (a + b + c might not equal a + c + b in float32). Batch composition changes which operations run concurrently. Mixture-of-experts models route tokens to different experts based on load, and different load produces different routing decisions. For true determinism, you need: T=0, a pinned seed, a pinned model version (dated snapshot, not <code>latest</code>), and — for self-hosted models — fixed batch sizes and deterministic CUDA kernels. Even then, some variance remains. The practical answer: evaluate with multiple runs (3–10 per prompt) and report mean ± std, not single-run results.</p>
+
+<div class="lens">
+  <span class="lens-tag">when not to tune</span>
+  The default settings from the API provider (T=0.7, top-p=0.95 for OpenAI; T=1.0, top-p=0.95 for Anthropic) are the result of extensive testing across diverse workloads. For most use cases, they're good enough. Tuning decoding parameters before you've tuned your prompt is optimization at the wrong layer — a better prompt will improve output quality more than any combination of sampling parameters. Start with the defaults, write a good prompt, and only reach for the decoding knobs when you have a specific reason.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">What happens before decoding —</span> <a href="tokenization.html">tokenization</a> turns text into the token IDs that the model processes. The decoding knobs determine which token ID comes <em>out</em>.</p>
+        <p class="thread"><span class="lead-in">The architecture doing the predicting —</span> <a href="transformers.html">the transformer</a> produces the logits that decoding consumes. Read them together for the full pipeline.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: LLM decoding sits among transformers, tokenization, context engineering, and RAG">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">transformers</text>
+          </g>
+          <g class="node learned" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">tokenization</text>
+          </g>
+          <g class="node" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">context eng.</text>
+          </g>
+          <g class="node" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">RAG</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">decoding</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="transformers.html">The transformer</a></li>
+          <li><a href="tokenization.html">Tokenization & BPE</a></li>
+          <li><span class="meta-line">Context engineering · frontier</span></li>
+          <li><span class="meta-line">RAG · frontier</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">LLMs &amp; Generative AI · inference</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

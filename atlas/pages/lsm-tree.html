@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Log-Structured Merge Trees — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Data &amp; Storage</span><span class="dot"></span>
+      <span>storage engines</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">Log-Structured Merge Trees</h1>
+    <p class="standfirst">Why modern databases write fast by never writing in place — and the merge dance that happens while you're not looking.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>A <a href="b-tree.html">B-tree</a> writes hurt. Updating a single row means reading the page containing it, modifying it in memory, and eventually writing the whole page back to disk. That's a random write, and random writes are slow — even on SSDs, where the gap between random and sequential is smaller but still real. For write-heavy workloads (time series, event logs, telemetry), B-trees become the bottleneck.</p>
+
+<p>An <span class="term">LSM-tree</span> (Log-Structured Merge Tree) inverts the strategy. Instead of modifying data in place, it <em>only</em> appends. Incoming writes go to a fast in-memory buffer (the <span class="term">memtable</span>). When the memtable fills, it's flushed to disk as a sorted, immutable file (an <span class="term">SSTable</span> — Sorted String Table). Writes are purely sequential: append to a WAL for durability, build the memtable in memory, flush to disk as a new file. No seeking, no page modification, no write amplification from in-place updates.</p>
+
+<div class="pull">Write fast by appending. Read by merging. Let compaction clean up in the background.</div>
+
+<h2>The anatomy of a write and a read</h2>
+
+<p>A write in an LSM-tree takes microseconds:</p>
+
+<ol>
+  <li>Append the operation to the <a href="write-ahead-log.html">WAL</a> (sequential write, for durability).</li>
+  <li>Insert into the <span class="term">memtable</span> — an in-memory sorted data structure, typically a skip list or a red-black tree. Return success to the client.</li>
+  <li>When the memtable reaches its size threshold (typically a few MB to tens of MB), freeze it, flush it to disk as a new SSTable, and start a new memtable.</li>
+</ol>
+
+<p>A read, however, may need to check multiple places:</p>
+
+<ol>
+  <li>Check the active memtable. Found it? Done (the fastest path).</li>
+  <li>Check recently flushed (still uncompacted) SSTables.</li>
+  <li>Check older, compacted SSTables — each level containing progressively more data.</li>
+  <li>To avoid scanning every SSTable for every read, each SSTable has a <a href="bloom-filter.html">Bloom filter</a> that can cheaply answer "this key is definitely not in this file." If the bloom filter says no, skip the file.</li>
+</ol>
+
+<p>This is the trade: writes are fast because they're pure append. Reads are slower because they potentially search through multiple files. An LSM-tree is optimized for writes, and you mitigate the read cost with bloom filters, compaction, and caching.</p>
+
+<h2>Compaction: the merge that keeps reads fast</h2>
+
+<p>If you just kept appending SSTables forever, reads would slow to a crawl (hundreds of files to check per lookup) and disk space would be consumed by obsolete keys. <span class="term">Compaction</span> is the background process that merges SSTables, discards overwritten or deleted keys, and produces a smaller set of sorted files.</p>
+
+<pre class="pre-label">Leveled compaction (RocksDB, the most common strategy)
+Level 0:  freshly flushed SSTables, no order between files, ~4 files max
+Level 1:  sorted, non-overlapping SSTables, ~10 MB total
+Level 2:  sorted, non-overlapping SSTables, ~100 MB total
+Level N:  sorted, non-overlapping SSTables, ~10× larger than N-1
+
+When level L exceeds its size limit:
+  Pick one SSTable from level L
+  Find overlapping SSTables in level L+1
+  Merge-sort them all together, discard deleted/overwritten keys
+  Write the result as new SSTables in level L+1</pre>
+
+<p>Compaction is the hidden cost of the LSM-tree. It's a background I/O and CPU consumer. A burst of writes fills up Level 0 quickly; compaction races to merge them into lower levels before reads have to search through too many files. If writes consistently outpace compaction, you get <span class="term">write stall</span> — the database deliberately slows or pauses writes until compaction catches up. This is the LSM-tree's signature failure mode: "my database was fast until it wasn't, and then it stopped accepting writes entirely."</p>
+
+<h2>LSM vs B-tree: the write amplification showdown</h2>
+
+<p>Both structures amplify writes — each logical write to the database becomes multiple physical writes to disk — but in different ways:</p>
+
+<ul>
+  <li><strong>B-tree write amplification:</strong> Updating one byte in a 16KB page writes the entire page to the WAL (one write) and eventually the data file (another write). That's 32KB of physical I/O for a one-byte logical write — amplification of 32,000× in the worst case.</li>
+
+  <li><strong>LSM-tree write amplification:</strong> A write goes to the WAL (one write), the memtable flush (one write per SSTable, amortized across many inserts), and then compaction rewrites it multiple times as it moves down levels. Each key may be rewritten 5–15 times before it reaches the bottom level.</li>
+</ul>
+
+<p>The crossover point depends on the workload. For write-heavy workloads (insert-only with few updates), LSM-trees win because appends are cheap and compaction is mostly copying data forward, not modifying it. For update-heavy workloads (lots of overwrites), B-trees can win because they modify in place — the old value doesn't need to be compacted away later. For read-heavy workloads, B-trees win outright: one read, one file, no merging.</p>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  You're storing 100 GB of time-series data — a sensor reading every second, keyed by (device_id, timestamp). The data is written once and read by time-range queries. B-tree or LSM-tree?
+</div>
+
+<p>LSM-tree, and strongly so. The writes are append-only (no updates, no deletes), so compaction doesn't need to discard anything — it's just copying data forward to maintain the level structure. The reads are range scans over sorted keys, which SSTables serve efficiently (they're sorted files — a range scan reads contiguous blocks). A B-tree would pay random-write costs on every insert with no benefit, since the data is never modified in place. TimescaleDB (a time-series extension for Postgres) and InfluxDB's storage engine are both LSM-backed, confirming this analysis in production.</p>
+
+<h2>Where LSM-trees run the world</h2>
+
+<p>The LSM-tree is the storage engine under:</p>
+
+<ul>
+  <li><strong>RocksDB</strong> — Meta's embeddable key-value store, used inside MySQL (MyRocks), Kafka Streams, and half the NoSQL databases in existence.</li>
+  <li><strong>LevelDB</strong> — Google's original, now mostly superseded by RocksDB but still powering Chrome's IndexedDB implementation.</li>
+  <li><strong>Cassandra / ScyllaDB</strong> — The wide-column databases that power Discord, Apple, and Netflix. LSM-trees with leveled or size-tiered compaction.</li>
+  <li><strong>HBase / Bigtable</strong> — Google's original LSM-tree database, the paper that introduced the idea (Chang et al., 2006).</li>
+  <li><strong>WiredTiger</strong> — MongoDB's default storage engine since 3.2. An LSM-tree with a B-tree option.</li>
+  <li><strong>InfluxDB (TSM engine)</strong> — A time-series-optimized LSM variant.</li>
+</ul>
+
+<div class="lens">
+  <span class="lens-tag">the tuning trap</span>
+  RocksDB has so many tuning knobs (compaction strategy, level size multiplier, bloom filter bits per key, memtable format, compression algorithm, block cache size, rate limiter...) that you can spend a career tuning it. The defaults are good for general workloads. The tuning is for when your specific workload is pathological for the defaults — typically: write stalls, read latency spikes during compaction, or memory pressure from oversized memtables. Start with the defaults, measure, and only touch the knobs when you can articulate which specific problem you're solving.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The read-optimized counterpoint —</span> <a href="b-tree.html">B-trees</a> optimize for reads by keeping data in one sorted structure. Read the pair together to understand the fundamental storage engine divide.</p>
+        <p class="thread"><span class="lead-in">The probabilistic filter inside every SSTable —</span> <a href="bloom-filter.html">Bloom filters</a> are what keep LSM-tree reads fast by cheaply ruling out files that can't contain the key.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: LSM-trees sit among B-trees, write-ahead logging, Bloom filters, and columnar storage">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">B-tree</text>
+          </g>
+          <g class="node learned" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">WAL</text>
+          </g>
+          <g class="node learned" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">bloom filter</text>
+          </g>
+          <g class="node" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">columnar</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">LSM-tree</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="b-tree.html">B-trees</a></li>
+          <li><a href="write-ahead-log.html">Write-ahead logging</a></li>
+          <li><a href="bloom-filter.html">Bloom filters</a></li>
+          <li><span class="meta-line">Columnar storage · frontier</span></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Data &amp; Storage · storage engines</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>

@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CRDTs — Atlas Go</title>
+  <link rel="stylesheet" href="../assets/atlas.css">
+</head>
+<body>
+<main class="page">
+
+  <header>
+    <p class="eyebrow">
+      <span>Systems &amp; Distributed</span><span class="dot"></span>
+      <span>theory</span><span class="dot"></span>
+      <span class="here">you are here</span>
+    </p>
+    <h1 class="title">CRDTs</h1>
+    <p class="standfirst">Data structures that merge without conflicts — the mathematical magic under collaborative editors, multi-leader databases, and offline-first apps.</p>
+  </header>
+
+  <hr class="openrule">
+
+  <div class="layout">
+    <article class="prose">
+
+<p>Two users edit the same document simultaneously. One types "hello" at the beginning. The other types "world" at the end. Their copies diverge. When they sync, what's the result? If the merge algorithm picks one edit and discards the other, one user loses their work. If it interleaves characters by timestamp, you get gibberish. If it requires a human to resolve the conflict, you've lost the dream of automatic collaboration.</p>
+
+<p>A <span class="term">CRDT</span> (Conflict-free Replicated Data Type) answers: merge them, and the result is "helloworld" — both edits preserved, no conflicts, no manual resolution. The merge is mathematically guaranteed to converge, regardless of the order in which the edits arrive. This is the magic under Google Docs, Figma, and any app where multiple users edit the same thing simultaneously.</p>
+
+<div class="pull">A CRDT is a data structure with a merge operation that is commutative (A merged with B = B merged with A), associative ((A merge B) merge C = A merge (B merge C)), and idempotent (A merge A = A). These three properties guarantee convergence.</div>
+
+<h2>The two families</h2>
+
+<p>CRDTs come in two flavors, distinguished by how they propagate state:</p>
+
+<ul>
+  <li><strong>State-based (CvRDTs):</strong> Each replica periodically sends its entire state to peers. The merge operation combines the states. Simple, robust to message loss and duplication, but the state can be large. Used when replicas sync periodically (gossip protocols, background sync).</li>
+
+  <li><strong>Operation-based (CmRDTs):</strong> Each replica sends only the operations (the edits), not the full state. The operations must be delivered exactly once, in causal order, to every replica. Smaller messages, but requires reliable causal broadcast — a stronger network primitive than state-based CRDTs need.</li>
+</ul>
+
+<h2>The basic CRDTs (and how they work)</h2>
+
+<p><strong>G-Counter (grow-only counter):</strong> Each replica has its own slot in a vector. Increments add to the local slot only. The value of the counter is the sum across all slots. The merge is the element-wise maximum of the two vectors. Merges are commutative, associative, and idempotent. The counter only grows — you can't decrement with a G-Counter.</p>
+
+<pre class="pre-label">G-Counter merge
+Replica A: [3, 0, 1]  (A incremented 3 times, C incremented once)
+Replica B: [2, 2, 0]  (A incremented twice, B incremented twice)
+Merge:     [3, 2, 1]  (element-wise max)
+Value:     3 + 2 + 1 = 6</pre>
+
+<p><strong>PN-Counter (positive-negative counter):</strong> Two G-Counters — one for increments, one for decrements. The value is (sum of increments) − (sum of decrements). Supports both increment and decrement, and the merge is still a max per slot.</p>
+
+<p><strong>G-Set (grow-only set):</strong> Add elements, never remove. Merge is set union. Simple, crippled (no removes), and useful as a building block.</p>
+
+<p><strong>OR-Set (observed-remove set):</strong> The practical set CRDT. Each element gets a unique tag when added. A remove operation removes only the elements with specific tags. Merge is the union of all (element, tag) pairs minus the removed ones. This handles the "add, remove, add again" problem: if you add "X", remove "X" (by tag), then add "X" again (with a new tag), the second addition survives. The tags disambiguate which specific addition is being removed.</p>
+
+<p><strong>RGA / Logoot / YATA (text CRDTs):</strong> The text CRDTs that power collaborative editing. Each character gets a globally unique position identifier. Inserts create new identifiers between existing ones (using fractional indexing or a tree structure). Concurrent inserts at the same position are ordered deterministically by their identifiers — both edits survive, and the order between them is consistent across all replicas. This is how Google Docs lets two users type at the same location without either edit being lost.</p>
+
+<h2>Where CRDTs run the world</h2>
+
+<ul>
+  <li><strong>Google Docs / Figma:</strong> Text and design CRDTs. Your edits merge with your colleague's edits in real time, with no lock and (usually) no conflict dialog.</li>
+  <li><strong>Redis Enterprise (Active-Active):</strong> CRDT-based multi-leader replication. Two datacenters accept writes simultaneously; CRDTs merge the changes. Counters use PN-Counters; sets use OR-Sets.</li>
+  <li><strong>Riak (2.0+):</strong> CRDT-backed data types (counters, sets, maps, registers). The database guarantees convergence without application-level conflict resolution.</li>
+  <li><strong>Yjs / Automerge:</strong> JavaScript CRDT libraries for offline-first and collaborative applications. Local edits are applied immediately; sync merges deterministically.</li>
+</ul>
+
+<div class="beat">
+  <span class="beat-tag">predict</span>
+  Two users concurrently set a shared "color" field — one writes "red," the other writes "blue." With a last-writer-wins register, one edit is silently discarded. With a CRDT, can both values survive? If not, what's the correct behavior?
+</div>
+
+<p>Both values cannot survive — the field is a single value, and setting it to "red" and "blue" simultaneously is a genuine conflict that no CRDT can resolve automatically. A <span class="term">Multi-Value Register</span> (MV-Register) would retain both values and expose the conflict to the application: "the value is {red, blue} — pick one." Some applications can resolve this automatically (merge the sets, show both colors as options). Others need the user to decide. The CRDT's job isn't to eliminate conflicts — it's to ensure that when a conflict exists, all replicas agree on what the conflicting values <em>are</em>, and that the merge converges. For a register, the merge is: keep the value with the highest timestamp, or keep both if the timestamps are concurrent (neither happened-before the other). The second case is a conflict, and the CRDT surfaces it rather than silently discarding one value.</p>
+
+<div class="lens">
+  <span class="lens-tag">the CRDT tax</span>
+  CRDTs have metadata overhead. A G-Counter is N integers for N replicas instead of a single integer. A text CRDT adds a position identifier per character (several bytes each), multiplying the size of the document relative to plain text. The merge operation is O(state size) for state-based CRDTs. And CRDTs can only implement operations that have a commutative, associative, idempotent merge — which rules out operations that need global arbitration (deducting from a shared balance, reserving a unique seat at an event). For those operations, you still need consensus or a central authority. CRDTs don't eliminate the need for consensus — they isolate it to the operations that genuinely require it.
+</div>
+
+      <div class="threads">
+        <h4>Threads worth pulling</h4>
+        <p class="thread"><span class="lead-in">The consistency model CRDTs enable —</span> <a href="eventual-consistency.html">eventual consistency</a> is the guarantee CRDTs provide: replicas converge without a central coordinator. Read them together.</p>
+        <p class="thread"><span class="lead-in">Tracking causality without clocks —</span> <span class="meta-line">vector clocks</span> solve the problem of "which update happened first?" without synchronized clocks, which is how version vectors in CRDTs work.</p>
+      </div>
+
+    </article>
+
+    <aside class="rail">
+      <div class="block">
+        <h4>Where this sits</h4>
+        <svg class="constellation" viewBox="0 0 280 200" role="img"
+             aria-label="Map: CRDTs sit among eventual consistency, vector clocks, gossip protocols, and replication">
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="40"/>
+          <line class="edge active" x1="140" y1="92" x2="62"  y2="144"/>
+          <line class="edge active" x1="140" y1="92" x2="218" y2="144"/>
+
+          <g class="node learned" transform="translate(62,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">eventual cons.</text>
+          </g>
+          <g class="node" transform="translate(218,40)">
+            <circle r="7"/><text x="0" y="-13" text-anchor="middle">vector clocks</text>
+          </g>
+          <g class="node learned" transform="translate(62,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">gossip</text>
+          </g>
+          <g class="node learned" transform="translate(218,144)">
+            <circle r="7"/><text x="0" y="22" text-anchor="middle">replication</text>
+          </g>
+          <g class="node here" transform="translate(140,92)">
+            <circle r="9"/><text x="0" y="-15" text-anchor="middle">CRDTs</text>
+          </g>
+        </svg>
+      </div>
+      <div class="block">
+        <h4>Connects to</h4>
+        <ul>
+          <li><a href="eventual-consistency.html">Eventual consistency</a></li>
+          <li><span class="meta-line">Vector clocks · frontier</span></li>
+          <li><a href="gossip.html">Gossip protocols</a></li>
+          <li><a href="replication.html">Replication</a></li>
+        </ul>
+      </div>
+      <div class="block">
+        <h4>Domain</h4>
+        <p class="meta-line">Systems &amp; Distributed · theory</p>
+      </div>
+    </aside>
+  </div>
+
+</main>
+</body>
+</html>
